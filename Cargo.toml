@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/machines/cpc", "crates/plugins/cpc-machine-plugin", "crates/plugin-dlls/cpc", "crates/formats/cpc-cartridge", "crates/formats/cpc-snapshot", "crates/chips/i8255"]
+
+# Same release profile as the retroclawd host.
+[profile.release]
+strip = true
+opt-level = "s"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+
+[profile.release.package.z80]
+opt-level = 3
+
+[profile.release.package.machine]
+opt-level = 3
+
+[profile.release.package.ay-3-8910]
+opt-level = 3
+
+[profile.release.package.zx-tape]
+opt-level = 3
+
+[profile.release.package.nec765]
+opt-level = 3
+
+[profile.release.package.cpc-machine-plugin]
+strip = false
+
+[profile.release.package.cpc-machine-plugin-dll]
+strip = false

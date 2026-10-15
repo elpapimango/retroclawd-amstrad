@@ -1,0 +1,20 @@
+# Which firmware satisfies which machine option, by SHA-1 (see sinclair/firmware.toml for the format).
+# The CPC takes one combined dump: lower OS + BASIC (+ AMSDOS in upper-ROM slot 7 on the 664/6128).
+
+[[rom]]
+machines = ["cpc464", "cpc464plus"]
+option = "rom"
+label = "CPC464 firmware (32K)"
+sha1 = ["56d39c463da60968d93e58b4ba0e675829412a20"]
+
+[[rom]]
+machines = ["cpc664"]
+option = "rom"
+label = "CPC664 firmware (48K)"
+sha1 = ["4a38f7f5bf7fd0a95cf882433c69e67251a46868"]
+
+[[rom]]
+machines = ["cpc6128", "cpc6128plus"]
+option = "rom"
+label = "CPC6128 firmware (48K)"
+sha1 = ["29dd0487dc5a96cd00966d074de8700ddd4ee18b"]
