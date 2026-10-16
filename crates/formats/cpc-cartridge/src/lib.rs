@@ -175,8 +175,27 @@ fn page_id(bank: u8) -> [u8; 4] {
 ///
 /// RIFF's size field is checked against the complete input, so bytes cut off
 /// from a declared chunk and bytes trailing the declared RIFF body are both
-/// rejected rather than silently ignored.
+/// rejected rather than silently ignored. [`parse_lenient`] accepts the two
+/// defects real images carry.
 pub fn parse(bytes: &[u8]) -> Result<Cartridge, Error> {
+    parse_with(bytes, false).map(|(cartridge, _)| cartridge)
+}
+
+/// Parse a `.cpr` image like [`parse`], but repair the two defects found in released images, and say what was repaired:
+///
+/// * a RIFF size field that does not match the file (the released `AmstradDiag.cpr` declares `0x040C` where `0x400C`
+///   is meant): the chunk lengths are followed instead;
+/// * a last page shorter than its chunk header declares (that image's 16K page holds 16364 bytes): the bytes that are
+///   there are kept and the rest of the page is zero-filled.
+///
+/// Anything else (a wrong signature or form type, a bad chunk id, a duplicate page, a chunk header cut short) is still
+/// an error. Other emulators read such files the same way.
+pub fn parse_lenient(bytes: &[u8]) -> Result<(Cartridge, Vec<String>), Error> {
+    parse_with(bytes, true)
+}
+
+fn parse_with(bytes: &[u8], lenient: bool) -> Result<(Cartridge, Vec<String>), Error> {
+    let mut repairs = Vec::new();
     if bytes.len() < HEADER_SIZE {
         return Err(Error::TooShort);
     }
@@ -190,10 +209,15 @@ pub fn parse(bytes: &[u8]) -> Result<Cartridge, Error> {
     let declared_size = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     let actual_size = bytes.len().saturating_sub(8);
     if declared_size as usize != actual_size {
-        return Err(Error::FileSizeMismatch {
-            declared: declared_size,
-            actual: actual_size,
-        });
+        if !lenient {
+            return Err(Error::FileSizeMismatch {
+                declared: declared_size,
+                actual: actual_size,
+            });
+        }
+        repairs.push(format!(
+            "the RIFF size field says {declared_size} bytes but the file has {actual_size}: following the chunk lengths"
+        ));
     }
 
     let mut offset = HEADER_SIZE;
@@ -233,21 +257,28 @@ pub fn parse(bytes: &[u8]) -> Result<Cartridge, Error> {
 
         let data_offset = offset + CHUNK_HEADER_SIZE;
         let remaining = bytes.len() - data_offset;
-        if length as usize > remaining {
-            return Err(Error::TruncatedPage {
-                bank,
-                expected: length,
-                remaining,
-            });
+        let mut length = length as usize;
+        if length > remaining {
+            if !lenient {
+                return Err(Error::TruncatedPage {
+                    bank,
+                    expected: length as u32,
+                    remaining,
+                });
+            }
+            repairs.push(format!(
+                "page {bank} declares {length} bytes but only {remaining} remain: zero-filling the rest"
+            ));
+            length = remaining;
         }
         let mut data = vec![0; PAGE_SIZE];
-        data[..length as usize].copy_from_slice(&bytes[data_offset..data_offset + length as usize]);
+        data[..length].copy_from_slice(&bytes[data_offset..data_offset + length]);
         pages.push(CartridgePage { bank, data });
         present[bank as usize] = true;
-        offset = data_offset + length as usize;
+        offset = data_offset + length;
     }
 
-    Ok(Cartridge { pages })
+    Ok((Cartridge { pages }, repairs))
 }
 
 /// Write a canonical `.cpr` image.
@@ -312,6 +343,42 @@ mod tests {
         assert_eq!(cartridge.pages[0].data.len(), PAGE_SIZE);
         assert_eq!(&cartridge.pages[0].data[..3], &[1, 2, 3]);
         assert!(cartridge.pages[0].data[3..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn the_lenient_parser_repairs_the_released_diagnostics_image_and_strict_parse_refuses_it() {
+        // The shape of the released AmstradDiag.cpr: one 16K page that holds 16364 bytes, a RIFF size of 0x040C where
+        // 0x400C is meant.
+        let mut file = Vec::new();
+        file.extend_from_slice(b"RIFF");
+        file.extend_from_slice(&0x040Cu32.to_le_bytes());
+        file.extend_from_slice(b"AMS!cb00");
+        file.extend_from_slice(&(PAGE_SIZE as u32).to_le_bytes());
+        file.extend(std::iter::repeat_n(0xC9u8, 16364));
+        assert_eq!(file.len(), 16384);
+        assert!(matches!(parse(&file), Err(Error::FileSizeMismatch { .. })));
+
+        let (cartridge, repairs) = parse_lenient(&file).unwrap();
+        assert_eq!(repairs.len(), 2, "{repairs:?}");
+        assert_eq!(cartridge.pages.len(), 1);
+        let page = &cartridge.pages[0];
+        assert_eq!(page.bank, 0);
+        assert!(page.data[..16364].iter().all(|&b| b == 0xC9));
+        assert!(
+            page.data[16364..].iter().all(|&b| b == 0),
+            "the missing 20 bytes are zero-filled"
+        );
+
+        // A clean image needs no repair, and what is still wrong stays an error.
+        let clean = image(&[(0, &[1, 2, 3])]);
+        assert!(parse_lenient(&clean).unwrap().1.is_empty());
+        let mut bad_id = clean.clone();
+        bad_id[12] = b'x';
+        assert!(matches!(
+            parse_lenient(&bad_id),
+            Err(Error::InvalidChunkId(_))
+        ));
+        assert_eq!(parse_lenient(b"RIFF").unwrap_err(), Error::TooShort);
     }
 
     #[test]

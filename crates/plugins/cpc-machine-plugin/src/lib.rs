@@ -577,8 +577,11 @@ fn cpc_rom_bytes(kind: CpcKind, bytes: &[u8]) -> Result<Vec<u8>, String> {
     if kind.model() != Model::Gx4000 || !bytes.starts_with(b"RIFF") {
         return Ok(bytes.to_vec());
     }
-    let cartridge =
-        cpc_cartridge::parse(bytes).map_err(|e| format!("invalid .cpr cartridge: {e}"))?;
+    let (cartridge, repairs) =
+        cpc_cartridge::parse_lenient(bytes).map_err(|e| format!("invalid .cpr cartridge: {e}"))?;
+    for repair in repairs {
+        eprintln!("cpc: the .cpr cartridge was repaired: {repair}");
+    }
     let max_bank = cartridge
         .pages
         .iter()
@@ -725,9 +728,10 @@ fn attach_media(
             let tape = match extension.as_str() {
                 "cdt" | "tzx" => zx_tape::parse_tzx(&bytes).map_err(|e| e.to_string())?,
                 "voc" => zx_tape::parse_voc(&bytes).map_err(|e| e.to_string())?,
+                "wav" => zx_tape::parse_wav(&bytes).map_err(|e| e.to_string())?,
                 other => {
                     return Err(format!(
-                        "unsupported tape extension for cpc plugin: .{other} (expected .cdt, .tzx, or .voc)"
+                        "unsupported tape extension for cpc plugin: .{other} (expected .cdt, .tzx, .voc or .wav)"
                     ));
                 }
             };
@@ -763,7 +767,7 @@ fn attach_media(
                     "unsupported cartridge extension for cpc plugin: .{extension} (expected .cpr)"
                 ));
             }
-            cpc_cartridge::parse(&bytes).map_err(|e| e.to_string())?;
+            cpc_cartridge::parse_lenient(&bytes).map_err(|e| e.to_string())?;
             Err("GX4000 cartridge must be supplied as the creation rom blob".to_string())
         }
         MediaKind::Program => {
@@ -964,21 +968,87 @@ fn key_names() -> Vec<plugin_api::MachineKeyInfo> {
         cpc_key_table()
             .iter()
             .map(|(name, _)| *name)
+            .chain(cpc_combo_table().iter().map(|(name, _)| *name))
             .chain(cpc_analog_axis_table().iter().map(|(name, _)| *name)),
     );
     plugin_api::set_key_chars(&mut infos, CPC_CHARS);
     infos
 }
 
-/// The characters of the few punctuation keys this plugin maps. (The rest of
-/// the CPC punctuation keys are not mapped at all yet, so a symbolic host
-/// layout falls back to the physical key for those.)
+/// The characters the keys type (unshifted from the firmware's key translation table at ROM `0x1D69`, shifted ones for
+/// the combo keys below from the shift table that follows it), for the host's symbolic keyboard layout and for typing
+/// (`--type`, paste).
 const CPC_CHARS: &[(&str, &str)] = &[
     ("Space", " "),
     ("Comma", ","),
     ("Period", "."),
     ("Slash", "/"),
+    ("Caret", "^"),
+    ("Minus", "-"),
+    ("At", "@"),
+    ("Semicolon", ";"),
+    ("Colon", ":"),
+    ("LeftBracket", "["),
+    ("RightBracket", "]"),
+    ("Backslash", "\\"),
+    ("Exclamation", "!"),
+    ("DoubleQuote", "\""),
+    ("Hash", "#"),
+    ("Dollar", "$"),
+    ("Percent", "%"),
+    ("Ampersand", "&"),
+    ("Apostrophe", "'"),
+    ("LeftParen", "("),
+    ("RightParen", ")"),
+    ("Underscore", "_"),
+    ("Equals", "="),
+    ("Pound", "\u{a3}"),
+    ("Pipe", "|"),
+    ("LeftBrace", "{"),
+    ("RightBrace", "}"),
+    ("Backtick", "`"),
+    ("Plus", "+"),
+    ("Asterisk", "*"),
+    ("Question", "?"),
+    ("GreaterThan", ">"),
+    ("LessThan", "<"),
 ];
+
+/// Keys that are a symbol on a shifted key: pressing one presses Shift and the base key together, as typing it on the
+/// real keyboard does (the pairs are the shift table of the CPC firmware).
+fn cpc_combo_table() -> &'static [(&'static str, (CpcKey, CpcKey))] {
+    use CpcKey::*;
+    &[
+        ("Exclamation", (Shift, Digit1)),
+        ("DoubleQuote", (Shift, Digit2)),
+        ("Hash", (Shift, Digit3)),
+        ("Dollar", (Shift, Digit4)),
+        ("Percent", (Shift, Digit5)),
+        ("Ampersand", (Shift, Digit6)),
+        ("Apostrophe", (Shift, Digit7)),
+        ("LeftParen", (Shift, Digit8)),
+        ("RightParen", (Shift, Digit9)),
+        ("Underscore", (Shift, Digit0)),
+        ("Equals", (Shift, Minus)),
+        ("Pound", (Shift, Caret)),
+        ("Pipe", (Shift, At)),
+        ("LeftBrace", (Shift, LeftBracket)),
+        ("RightBrace", (Shift, RightBracket)),
+        ("Backtick", (Shift, Backslash)),
+        ("Plus", (Shift, Semicolon)),
+        ("Asterisk", (Shift, Colon)),
+        ("Question", (Shift, Slash)),
+        ("GreaterThan", (Shift, Period)),
+        ("LessThan", (Shift, Comma)),
+    ]
+}
+
+fn cpc_combo_from_name(name: &str) -> Option<(CpcKey, CpcKey)> {
+    cpc_combo_table()
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, value)| *value)
+}
 
 fn cpc_key_table() -> &'static [(&'static str, CpcKey)] {
     use CpcKey::*;
@@ -1038,6 +1108,25 @@ fn cpc_key_table() -> &'static [(&'static str, CpcKey)] {
         ("Comma", Comma),
         ("Period", Period),
         ("Slash", Slash),
+        ("Caret", Caret),
+        ("Minus", Minus),
+        ("At", At),
+        ("Semicolon", Semicolon),
+        ("Colon", Colon),
+        ("LeftBracket", LeftBracket),
+        ("RightBracket", RightBracket),
+        ("Backslash", Backslash),
+        ("F0", F0),
+        ("F1", F1),
+        ("F2", F2),
+        ("F3", F3),
+        ("F4", F4),
+        ("F5", F5),
+        ("F6", F6),
+        ("F7", F7),
+        ("F8", F8),
+        ("F9", F9),
+        ("FDot", FDot),
         // Explicit joystick wires, for the keymap config to bind to any host
         // key (joystick 1 on matrix line 9, joystick 2 on line 6).
         ("Joy1Up", Joy1Up),
@@ -1064,7 +1153,7 @@ fn cpc_key_from_name(name: &str) -> Option<CpcKey> {
         .map(|(_, value)| *value)
 }
 
-/// Joystick 1 rides the arrow keys and Space, alongside the cursor keys and
+/// Joystick 1 rides the arrow keys, alongside the cursor keys and
 /// Space bar they already press (real joystick 1 is a separate device, but a
 /// keyboard-only user has one set of keys for both conventions, so games
 /// reading either respond -- the same "rides the same physical keys"
@@ -1077,7 +1166,8 @@ fn cpc_joystick1_alias(name: &str) -> Option<CpcKey> {
         "ArrowDown" => CpcKey::Joy1Down,
         "ArrowLeft" => CpcKey::Joy1Left,
         "ArrowRight" => CpcKey::Joy1Right,
-        "Space" => CpcKey::Joy1Fire1,
+        // Not Space: the firmware's key table turns joystick 1 fire into the character `X`, so a Space that also pressed
+        // fire typed "X " (found typing BASIC through `--type`). Bind `Joy1Fire1` to a host key with `[keys]` for games.
         _ => return None,
     })
 }
@@ -1312,6 +1402,16 @@ fn handle_machine_command(
                     cpc::ANALOG_MIN
                 };
                 record.machine.set_analog_axis(joystick, axis, value);
+                return Ok(MachineResponse::Ack);
+            }
+            if let Some((modifier, base)) = cpc_combo_from_name(&key) {
+                for key in [modifier, base] {
+                    if pressed {
+                        record.machine.press_key(key);
+                    } else {
+                        record.machine.release_key(key);
+                    }
+                }
                 return Ok(MachineResponse::Ack);
             }
             if let Some(mapped) = cpc_key_from_name(&key) {
@@ -1785,7 +1885,7 @@ mod tests {
     }
 
     #[test]
-    fn arrows_and_space_drive_joystick_1_alongside_the_cursor_keys() {
+    fn arrows_drive_joystick_1_alongside_the_cursor_keys_but_space_does_not_press_fire() {
         let created = create_machine(create_request("cpc464")).unwrap();
         let instance = created.instance;
         // ArrowLeft: cursor-left (line 1 bit 0) AND joystick 1 left (line 9 bit 2).
@@ -1795,12 +1895,12 @@ mod tests {
         press(instance, "ArrowLeft", false);
         assert_eq!(keyboard_line(instance, 1), 0xFF);
         assert_eq!(keyboard_line(instance, 9), 0xFF);
-        // Space: the space bar (line 5 bit 7) and joystick 1 fire 1 (line 9 bit 4).
+        // Space is only the space bar (line 5 bit 7): joystick 1 fire (line 9 bit 4) would make the firmware type an `X`.
         press(instance, "Space", true);
         assert_eq!(keyboard_line(instance, 5) & 0x80, 0);
-        assert_eq!(keyboard_line(instance, 9) & 0x10, 0);
-        press(instance, "Space", false);
         assert_eq!(keyboard_line(instance, 9), 0xFF);
+        press(instance, "Space", false);
+        assert_eq!(keyboard_line(instance, 5), 0xFF);
         state().lock().unwrap().instances.remove(&instance);
     }
 
@@ -2530,5 +2630,88 @@ mod tests {
             checked > 0,
             "no firmware.toml entry applies to this plugin's machines"
         );
+    }
+
+    /// The CPC firmware's key translation tables: ten lines of eight bits, normal at ROM 0x1D69 and shifted (right after it) at
+    /// 0x1DB9. They are what BASIC and the firmware turn a pressed matrix position into, i.e. the hardware's own
+    /// key-to-character map; `Some` only when the ROM file is present.
+    fn firmware_key_tables() -> Option<(Vec<u8>, Vec<u8>)> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../roms/cpc/cpc464.rom");
+        let rom = std::fs::read(path).ok()?;
+        Some((rom[0x1D69..0x1DB9].to_vec(), rom[0x1DB9..0x1E09].to_vec()))
+    }
+
+    #[test]
+    fn every_character_a_key_claims_is_what_the_firmware_makes_of_its_matrix_position() {
+        let Some((normal, shifted)) = firmware_key_tables() else {
+            eprintln!("skipping: roms/cpc/cpc464.rom is not present");
+            return;
+        };
+        let at = |(line, bit): (u8, u8)| usize::from(line) * 8 + usize::from(bit);
+        let mut checked = 0;
+        for (name, text) in CPC_CHARS {
+            let wanted = text.chars().next().unwrap();
+            // The firmware's byte for the character (the pound sign is 0xA3 there).
+            let code = if wanted == '\u{a3}' {
+                0xA3
+            } else {
+                wanted as u8
+            };
+            let got = if let Some((modifier, base)) = cpc_combo_from_name(name) {
+                assert_eq!(
+                    modifier,
+                    CpcKey::Shift,
+                    "{name} combines Shift with its key"
+                );
+                shifted[at(base.position())]
+            } else {
+                let key = cpc_key_from_name(name).unwrap_or_else(|| panic!("{name} is not a key"));
+                normal[at(key.position())]
+            };
+            assert_eq!(
+                got, code,
+                "{name}: the firmware types {got:#04x}, the plugin says {wanted:?}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 30, "only {checked} characters were checked");
+    }
+
+    #[test]
+    fn the_function_keys_are_the_ones_the_firmware_expands() {
+        let Some((normal, _)) = firmware_key_tables() else {
+            return;
+        };
+        // The firmware's expansion tokens: F0-F9 are 0x80-0x89, the `.` key 0x8A, small Enter 0x8B.
+        for n in 0..10u8 {
+            let key = cpc_key_from_name(&format!("F{n}")).unwrap();
+            let (line, bit) = key.position();
+            assert_eq!(
+                normal[usize::from(line) * 8 + usize::from(bit)],
+                0x80 + n,
+                "F{n}"
+            );
+        }
+        let (line, bit) = cpc_key_from_name("FDot").unwrap().position();
+        assert_eq!(normal[usize::from(line) * 8 + usize::from(bit)], 0x8A);
+    }
+
+    #[test]
+    fn a_shifted_symbol_presses_shift_and_its_key_together() {
+        let created = create_machine(create_request("cpc464")).unwrap();
+        let instance = created.instance;
+        // The double quote is Shift (line 2, bit 5) with `2` (line 8, bit 1).
+        press(instance, "DoubleQuote", true);
+        assert_eq!(keyboard_line(instance, 2) & 0x20, 0, "Shift");
+        assert_eq!(keyboard_line(instance, 8) & 0x02, 0, "the 2 key");
+        press(instance, "DoubleQuote", false);
+        assert_eq!(keyboard_line(instance, 2), 0xFF);
+        assert_eq!(keyboard_line(instance, 8), 0xFF);
+        // A plain punctuation key: the comma is line 4, bit 7 (it was swapped with the full stop once).
+        press(instance, "Comma", true);
+        assert_eq!(keyboard_line(instance, 4) & 0x80, 0);
+        press(instance, "Comma", false);
+        press(instance, "Period", true);
+        assert_eq!(keyboard_line(instance, 3) & 0x80, 0);
     }
 }

@@ -17,6 +17,22 @@ The Amstrad CPC machine family of retroclawd, split out of the main repository (
 
 The notes below were written in the host repository before the split and refer to it in places (`retroclawd`'s GUI, `HostedMachine`, `emu_thread`, the CLI flags): those parts are host code and are documented in the host's CLAUDE.md.
 
+- **CPC keyboard: punctuation, function keys and typing (2026-10-16)**: the matrix is now complete and read from the firmware's
+  own key translation tables (normal at ROM `0x1D69`, shifted at `0x1DB9`, ten lines of eight bits), which the plugin tests compare
+  against (`every_character_a_key_claims_is_what_the_firmware_makes_of_its_matrix_position`, ROM-gated): the keys `Caret`, `Minus`, `At`,
+  `Semicolon`, `Colon`, `LeftBracket`, `RightBracket`, `Backslash`, `F0`-`F9` and `FDot` exist, and 21 shifted symbols are combo keys
+  (`DoubleQuote` = Shift+2, `Exclamation`, `Hash`, `Dollar`, `Percent`, `Ampersand`, `Apostrophe`, `LeftParen`, `RightParen`,
+  `Underscore`, `Equals`, `Pound`, `Pipe`, `LeftBrace`, `RightBrace`, `Backtick`, `Plus`, `Asterisk`, `Question`, `GreaterThan`,
+  `LessThan`) that press Shift and the base key together, with their characters in `CPC_CHARS` so a symbolic layout, `--type` and paste can
+  produce them. Before this only `, . /` were mapped, so BASIC could not be typed headless (no `"`). **Two real bugs found on the way:**
+  `Comma` and `Period` were swapped (`,` is line 4 bit 7 and `.` line 3 bit 7), and the plugin pressed joystick 1 Fire 1 together with Space,
+  which the firmware turns into the character `X` -- every typed space came out as "X "; that alias is gone (arrows still press the
+  joystick directions; bind `Joy1Fire1` with `[keys]` for games). The `rc-suite` CPC case types a program of every symbol into the real
+  firmware and reads the string BASIC built back out of memory.
+- **Malformed `.cpr` images (2026-10-16)**: `cpc_cartridge::parse` stays strict; `parse_lenient` (used by the plugin for the creation ROM
+  and cartridge attach) repairs the two defects of real images -- a RIFF size field that does not match the file and a last page shorter
+  than its chunk header says (zero-filled) -- and reports each repair on stderr. The released `AmstradDiag.cpr` has both (size `0x040C`,
+  page 20 bytes short). Anything else (signature, chunk ids, duplicate pages, a cut chunk header) is still an error.
 - **`i8255`** (`crates/chips/i8255`) — Intel 8255 PPI, **mode 0 (basic
   I/O) only** (modes 1/2 exist on real hardware but nothing this project
   models uses them; a mode-set write's group-mode bits are stored/

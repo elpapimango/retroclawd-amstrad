@@ -75,6 +75,28 @@ pub enum CpcKey {
     Comma,
     Period,
     Slash,
+    /// The punctuation keys (line, bit from the firmware's own key translation table at ROM 0x1D69, which also gives
+    /// the shifted symbol each one types: `^`/pound, `-`/`=`, `@`/`|`, `;`/`+`, `:`/`*`, `[`/`{`, `]`/`}`, `\`/backtick).
+    Caret,
+    Minus,
+    At,
+    Semicolon,
+    Colon,
+    LeftBracket,
+    RightBracket,
+    Backslash,
+    /// The ten function keys of the keypad block, `F.` (the key printed with a point) and nothing else.
+    F0,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    FDot,
     /// Real CPC joystick 1, read through keyboard matrix line 9 alongside
     /// `Delete` -- genuinely a separate physical device from the cursor
     /// keys above (unlike ZX Spectrum's Sinclair/Cursor joysticks, which
@@ -121,25 +143,45 @@ impl CpcKey {
         )
     }
 
-    fn position(self) -> (u8, u8) {
+    /// The (matrix line, bit) this key is wired to.
+    pub fn position(self) -> (u8, u8) {
         use CpcKey::*;
         match self {
             CursorUp => (0, 0),
             CursorRight => (0, 1),
             CursorDown => (0, 2),
+            F9 => (0, 3),
+            F6 => (0, 4),
+            F3 => (0, 5),
             Enter => (0, 6),
+            FDot => (0, 7),
 
             CursorLeft => (1, 0),
             Copy => (1, 1),
+            F7 => (1, 2),
+            F8 => (1, 3),
+            F5 => (1, 4),
+            F1 => (1, 5),
+            F2 => (1, 6),
+            F0 => (1, 7),
 
             Clr => (2, 0),
+            LeftBracket => (2, 1),
             Return => (2, 2),
+            RightBracket => (2, 3),
+            F4 => (2, 4),
             Shift => (2, 5),
+            Backslash => (2, 6),
             Control => (2, 7),
 
+            Caret => (3, 0),
+            Minus => (3, 1),
+            At => (3, 2),
             P => (3, 3),
+            Semicolon => (3, 4),
+            Colon => (3, 5),
             Slash => (3, 6),
-            Comma => (3, 7),
+            Period => (3, 7),
 
             Digit0 => (4, 0),
             Digit9 => (4, 1),
@@ -148,7 +190,7 @@ impl CpcKey {
             L => (4, 4),
             K => (4, 5),
             M => (4, 6),
-            Period => (4, 7),
+            Comma => (4, 7),
 
             Digit8 => (5, 0),
             Digit7 => (5, 1),
