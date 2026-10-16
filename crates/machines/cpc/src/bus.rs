@@ -1532,11 +1532,14 @@ impl Bus for CpcBus {
                 self.gate_array.write(val);
                 match val >> 6 {
                     // Ink write. A CPC+ takes its colours from the ASIC
-                    // palette registers (see `video_state`), so only a
-                    // classic Gate Array's inks are traced from here.
-                    0b01 if self.asic.is_none() => {
+                    // palette (see `video_state`) but still honours the
+                    // classic write, which sets that palette entry.
+                    0b01 => {
                         let pen = self.gate_array.selected_pen().min(16);
-                        let (r, g, b) = self.gate_array.pen_color(pen);
+                        let (r, g, b) = match self.asic.as_mut() {
+                            Some(asic) => asic.set_legacy_ink(pen, val),
+                            None => self.gate_array.pen_color(pen),
+                        };
                         self.log_video_event(VideoEventKind::Ink {
                             pen,
                             rgb: [r, g, b],
@@ -4249,5 +4252,32 @@ mod tests {
             0x00,
             "EAR bit (Port B bit 7) should reflect low sample from VOC tape"
         );
+    }
+
+    #[test]
+    fn a_classic_ink_write_sets_the_asic_palette_of_a_plus_model() {
+        // Programs (and the .cpr diagnostics) set colours with `OUT (&7Fxx)` and never touch the ASIC registers; a
+        // Plus must show them rather than black.
+        for model in [Model::Gx4000, Model::Cpc6128Plus] {
+            let mut cpc = if model.has_internal_rom() {
+                test_cpc_model(model)
+            } else {
+                test_cpc_cartridge(model, 1)
+            };
+            cpc.bus.write_io(0x7F00, 0x01); // select pen 1
+            cpc.bus.write_io(0x7F00, 0x40 | 4); // hardware colour 4: blue (level 1 of B)
+            assert_eq!(
+                cpc.bus.video_state().inks[1],
+                [0x00, 0x00, 0x88],
+                "{model:?}"
+            );
+            cpc.bus.write_io(0x7F00, 0x10); // the border
+            cpc.bus.write_io(0x7F00, 0x40 | 11); // bright white
+            assert_eq!(
+                cpc.bus.video_state().inks[16],
+                [0xFF, 0xFF, 0xFF],
+                "{model:?}"
+            );
+        }
     }
 }

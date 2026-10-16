@@ -235,6 +235,19 @@ impl Asic {
         Self::decode_color(self.ram[idx], self.ram[idx + 1])
     }
 
+    /// A classic Gate Array ink write (`OUT (&7Fxx)` with function `01`), which a CPC+/GX4000 still honours: the ASIC
+    /// palette entry of `pen` (`16` = border) becomes the 12-bit form of the 27-colour hardware number `hardware`
+    /// (each channel's off/half/full level is `0`/`8`/`F`, which renders exactly like the classic palette). Without this
+    /// a program that sets its colours the old way -- every CPC program, and the `.cpr` diagnostics -- shows black.
+    /// Returns the colour now in the entry.
+    pub(crate) fn set_legacy_ink(&mut self, pen: u8, hardware: u8) -> (u8, u8, u8) {
+        let (r, g, b) = crate::gate_array::PALETTE[usize::from(hardware & 0x1F)];
+        let idx = PALETTE_BASE + usize::from(pen.min(16)) * 2;
+        self.ram[idx] = (r & 0xF0) | (b >> 4);
+        self.ram[idx + 1] = g >> 4;
+        self.pen_color(pen)
+    }
+
     /// Sprite colour `1..=15` (`0` is always transparent and never
     /// queried). Sprite colours physically reuse palette entries 17-31 --
     /// real hardware fact, not a coincidence (see module doc comment).

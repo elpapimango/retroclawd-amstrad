@@ -29,6 +29,12 @@ The notes below were written in the host repository before the split and refer t
   which the firmware turns into the character `X` -- every typed space came out as "X "; that alias is gone (arrows still press the
   joystick directions; bind `Joy1Fire1` with `[keys]` for games). The `rc-suite` CPC case types a program of every symbol into the real
   firmware and reads the string BASIC built back out of memory.
+- **Classic ink writes on a CPC+ (2026-10-16)**: a Plus takes its colours from the ASIC palette (`video_state`), and the Gate Array
+  ink write (`OUT (&7Fxx)`, function `01`) used to be dropped there, so every program that sets colours the old way -- every CPC
+  program, and the GX4000 diagnostics cartridge -- showed black. `Asic::set_legacy_ink` now writes the 12-bit form of the hardware colour
+  into the pen's palette entry (levels off/half/full become `0`/`8`/`F`, which renders like the classic palette). Unit test
+  `a_classic_ink_write_sets_the_asic_palette_of_a_plus_model` (mutation-checked). The earlier note that the cartridge "parks in a VSYNC
+  wait" was wrong: it ran, with a black screen; it programs the CRTC itself.
 - **Malformed `.cpr` images (2026-10-16)**: `cpc_cartridge::parse` stays strict; `parse_lenient` (used by the plugin for the creation ROM
   and cartridge attach) repairs the two defects of real images -- a RIFF size field that does not match the file and a last page shorter
   than its chunk header says (zero-filled) -- and reports each repair on stderr. The released `AmstradDiag.cpr` has both (size `0x040C`,
