@@ -255,7 +255,6 @@ impl GateArray {
 mod tests {
     use super::*;
 
-    #[test]
     fn both_roms_enabled_by_default() {
         let ga = GateArray::new();
         assert!(!ga.lower_rom_disabled());
@@ -266,9 +265,14 @@ mod tests {
     /// doc comment for the real bug this fixes (`Cpc::render_frame`
     /// returning `None` before any instruction had run, failing
     /// `retroclawd`'s GUI startup preflight check).
-    #[test]
     fn screen_mode_defaults_to_1_matching_real_hardware_power_on() {
         assert_eq!(GateArray::new().screen_mode(), 1);
+    }
+    /// Merged (every check kept): `both_roms_enabled_by_default`, `screen_mode_defaults_to_1_matching_real_hardware_power_on`.
+    #[test]
+    fn power_on_defaults() {
+        both_roms_enabled_by_default();
+        screen_mode_defaults_to_1_matching_real_hardware_power_on();
     }
 
     #[test]
@@ -294,7 +298,6 @@ mod tests {
     /// hardware color 4 is "Blue" per CPCTech's own table (see
     /// `PALETTE`'s doc comment) -- RGB levels 0/0/1, i.e. blue channel
     /// only, at half intensity.
-    #[test]
     fn hardware_color_4_is_blue_per_the_cited_reference_table() {
         assert_eq!(PALETTE[4], (0x00, 0x00, 0x80));
     }
@@ -303,12 +306,16 @@ mod tests {
     /// half) -- deliberately *not* black, a real, slightly counter-
     /// intuitive fact worth locking in since it's easy to assume 0
     /// means black.
-    #[test]
     fn hardware_color_0_is_white_not_black() {
         assert_eq!(PALETTE[0], (0x80, 0x80, 0x80));
     }
-
+    /// Merged (every check kept): `hardware_color_4_is_blue_per_the_cited_reference_table`, `hardware_color_0_is_white_not_black`.
     #[test]
+    fn hardware_colours() {
+        hardware_color_4_is_blue_per_the_cited_reference_table();
+        hardware_color_0_is_white_not_black();
+    }
+
     fn interrupt_fires_and_resets_at_52_hsyncs() {
         let mut ga = GateArray::new();
         for _ in 0..51 {
@@ -321,7 +328,6 @@ mod tests {
         assert!(!ga.hsync_falling_edge(), "counter should have reset to 0");
     }
 
-    #[test]
     fn vsync_resets_counter_two_hsyncs_later_and_fires_at_32_or_more() {
         let mut ga = GateArray::new();
         for _ in 0..30 {
@@ -333,7 +339,6 @@ mod tests {
         assert!(!ga.hsync_falling_edge());
     }
 
-    #[test]
     fn vsync_suppresses_early_interrupt_below_32_hsyncs() {
         let mut ga = GateArray::new();
         for _ in 0..20 {
@@ -347,8 +352,14 @@ mod tests {
         }
         assert!(ga.hsync_falling_edge());
     }
-
+    /// Merged (every check kept): `interrupt_fires_and_resets_at_52_hsyncs`, `vsync_resets_counter_two_hsyncs_later_and_fires_at_32_or_more`, `vsync_suppresses_early_interrupt_below_32_hsyncs`.
     #[test]
+    fn interrupt_counter() {
+        interrupt_fires_and_resets_at_52_hsyncs();
+        vsync_resets_counter_two_hsyncs_later_and_fires_at_32_or_more();
+        vsync_suppresses_early_interrupt_below_32_hsyncs();
+    }
+
     fn the_interrupt_line_is_held_until_it_is_acknowledged() {
         let mut ga = GateArray::new();
         assert!(!ga.interrupt_line());
@@ -362,7 +373,6 @@ mod tests {
         assert!(!ga.interrupt_line());
     }
 
-    #[test]
     fn acknowledging_clears_bit_5_of_the_scanline_counter() {
         // Counter at 40 when the CPU finally acknowledges: bit 5 (32) is
         // cleared, leaving 8, so the next interrupt is 44 scanlines away
@@ -389,8 +399,13 @@ mod tests {
         }
         assert!(ga.hsync_falling_edge(), "still the 32nd one after 20");
     }
-
+    /// Merged (every check kept): `the_interrupt_line_is_held_until_it_is_acknowledged`, `acknowledging_clears_bit_5_of_the_scanline_counter`.
     #[test]
+    fn interrupt_acknowledge() {
+        the_interrupt_line_is_held_until_it_is_acknowledged();
+        acknowledging_clears_bit_5_of_the_scanline_counter();
+    }
+
     fn the_delay_bit_of_the_mode_register_clears_a_pending_interrupt() {
         let mut ga = GateArray::new();
         ga.assert_interrupt();
@@ -400,7 +415,6 @@ mod tests {
         assert!(!ga.interrupt_line());
     }
 
-    #[test]
     fn interrupt_counter_reset_bit_clears_pending_count() {
         let mut ga = GateArray::new();
         for _ in 0..20 {
@@ -411,5 +425,11 @@ mod tests {
             assert!(!ga.hsync_falling_edge());
         }
         assert!(ga.hsync_falling_edge());
+    }
+    /// Merged (every check kept): `the_delay_bit_of_the_mode_register_clears_a_pending_interrupt`, `interrupt_counter_reset_bit_clears_pending_count`.
+    #[test]
+    fn interrupt_clearing() {
+        the_delay_bit_of_the_mode_register_clears_a_pending_interrupt();
+        interrupt_counter_reset_bit_clears_pending_count();
     }
 }

@@ -134,7 +134,6 @@ mod tests {
         bytes.extend_from_slice(&ms.to_le_bytes());
         zx_tape::parse_tzx(&bytes).unwrap()
     }
-    #[test]
     fn save_state_round_trips_cpu_and_memory() {
         let mut cpc = Cpc::new(vec![0; crate::ROM_IMAGE_SIZE_464], crate::Model::Cpc464).unwrap();
         cpc.bus.write(0x4000, 0x42);
@@ -150,7 +149,6 @@ mod tests {
         assert_eq!(restored.read_memory(0x4000), 0x42);
     }
 
-    #[test]
     fn save_state_rejects_a_different_cpc_model() {
         let source = Cpc::new(
             vec![0; crate::ROM_IMAGE_SIZE_664_6128],
@@ -165,8 +163,13 @@ mod tests {
 
         assert!(target.load_state(&source.save_state()).is_err());
     }
-
+    /// Merged (every check kept): `save_state_round_trips_cpu_and_memory`, `save_state_rejects_a_different_cpc_model`.
     #[test]
+    fn save_state_basics() {
+        save_state_round_trips_cpu_and_memory();
+        save_state_rejects_a_different_cpc_model();
+    }
+
     fn save_state_round_trips_asic_state_for_plus_models() {
         let mut cpc =
             Cpc::new(vec![0; crate::ROM_IMAGE_SIZE_464], crate::Model::Cpc464Plus).unwrap();
@@ -190,12 +193,17 @@ mod tests {
         assert_eq!(restored_asic.pri(), 77);
     }
 
-    #[test]
     fn save_state_round_trips_gx4000_asic_state_without_a_classic_asic_mismatch() {
         let source = Cpc::new(vec![0; crate::ROM_SIZE], crate::Model::Gx4000).unwrap();
         let mut target = Cpc::new(vec![0; crate::ROM_SIZE], crate::Model::Gx4000).unwrap();
         target.load_state(&source.save_state()).unwrap();
         assert!(!target.bus.asic_state().unwrap().enabled());
+    }
+    /// Merged (every check kept): `save_state_round_trips_asic_state_for_plus_models`, `save_state_round_trips_gx4000_asic_state_without_a_classic_asic_mismatch`.
+    #[test]
+    fn save_state_asic() {
+        save_state_round_trips_asic_state_for_plus_models();
+        save_state_round_trips_gx4000_asic_state_without_a_classic_asic_mismatch();
     }
 
     #[test]
@@ -261,7 +269,6 @@ mod tests {
             .clone()
     }
 
-    #[test]
     fn save_state_carries_a_modified_disk_and_reverts_to_the_original_for_a_clean_one() {
         let rom = || vec![0; crate::ROM_IMAGE_SIZE_664_6128];
         let mut cpc = Cpc::new(rom(), crate::Model::Cpc6128).unwrap();
@@ -294,7 +301,6 @@ mod tests {
         assert_eq!(sector_c1(&other), vec![0x77; 512]);
     }
 
-    #[test]
     fn a_clean_disk_adds_nothing_to_the_save_state() {
         let rom = || vec![0; crate::ROM_IMAGE_SIZE_664_6128];
         let mut with_disk = Cpc::new(rom(), crate::Model::Cpc6128).unwrap();
@@ -305,6 +311,12 @@ mod tests {
             without.save_state().len(),
             "an unwritten disk must stay external"
         );
+    }
+    /// Merged (every check kept): `save_state_carries_a_modified_disk_and_reverts_to_the_original_for_a_clean_one`, `a_clean_disk_adds_nothing_to_the_save_state`.
+    #[test]
+    fn save_state_disk() {
+        save_state_carries_a_modified_disk_and_reverts_to_the_original_for_a_clean_one();
+        a_clean_disk_adds_nothing_to_the_save_state();
     }
 
     #[test]

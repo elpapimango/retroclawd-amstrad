@@ -436,7 +436,6 @@ mod tests {
         assert_eq!(parse(&bytes).unwrap(), snapshot);
     }
 
-    #[test]
     fn accepts_v1_without_versioned_tail() {
         let mut snapshot = sample();
         snapshot.version = 1;
@@ -449,11 +448,16 @@ mod tests {
         assert_eq!(parsed.version3, None);
     }
 
-    #[test]
     fn rejects_bad_magic_and_truncation() {
         assert_eq!(parse(&[0; HEADER_SIZE]), Err(Error::InvalidMagic));
         let mut bytes = write(&sample()).unwrap();
         bytes.truncate(HEADER_SIZE + 3);
         assert!(matches!(parse(&bytes), Err(Error::TruncatedRam { .. })));
+    }
+    /// Merged (every check kept): `accepts_v1_without_versioned_tail`, `rejects_bad_magic_and_truncation`.
+    #[test]
+    fn snapshot_edge_cases() {
+        accepts_v1_without_versioned_tail();
+        rejects_bad_magic_and_truncation();
     }
 }

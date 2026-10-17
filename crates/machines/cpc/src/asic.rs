@@ -580,7 +580,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn unlock_sequence_enables_asic() {
         let mut asic = Asic::new();
         assert!(!asic.enabled());
@@ -588,7 +587,6 @@ mod tests {
         assert!(asic.enabled());
     }
 
-    #[test]
     fn a_mismatched_byte_after_a_nonzero_byte_resyncs_detection() {
         let mut asic = Asic::new();
         asic.check_unlock_sequence(0xAA); // garbage, non-zero
@@ -597,7 +595,6 @@ mod tests {
         assert!(asic.enabled());
     }
 
-    #[test]
     fn sending_only_the_first_14_bytes_locks_while_already_unlocked() {
         // The 15th byte always re-enables regardless of its own value
         // (see `check_unlock_sequence`'s own doc comment) -- resending
@@ -611,6 +608,13 @@ mod tests {
             asic.check_unlock_sequence(byte);
         }
         assert!(!asic.enabled());
+    }
+    /// Merged (every check kept): `unlock_sequence_enables_asic`, `a_mismatched_byte_after_a_nonzero_byte_resyncs_detection`, `sending_only_the_first_14_bytes_locks_while_already_unlocked`.
+    #[test]
+    fn asic_unlock_sequence() {
+        unlock_sequence_enables_asic();
+        a_mismatched_byte_after_a_nonzero_byte_resyncs_detection();
+        sending_only_the_first_14_bytes_locks_while_already_unlocked();
     }
 
     #[test]
@@ -632,7 +636,6 @@ mod tests {
         assert_eq!(asic.pen_color(3), (255, 255, 0));
     }
 
-    #[test]
     fn sprite_position_and_magnification_decode() {
         let mut asic = Asic::new();
         let base = 0x0000; // relative to 0x6000 -> sprite 0's info at &6000
@@ -648,14 +651,18 @@ mod tests {
         assert_eq!(sprite.height, 32);
     }
 
-    #[test]
     fn sprite_pixel_data_masks_to_nibble() {
         let mut asic = Asic::new();
         asic.write_low(0, 0xFF);
         assert_eq!(asic.sprite_pixel(0, 0, 0), 0x0F);
     }
-
+    /// Merged (every check kept): `sprite_position_and_magnification_decode`, `sprite_pixel_data_masks_to_nibble`.
     #[test]
+    fn sprite_decoding() {
+        sprite_position_and_magnification_decode();
+        sprite_pixel_data_masks_to_nibble();
+    }
+
     fn dma_load_command_reports_psg_write() {
         let mut asic = Asic::new();
         let mut ram = vec![0u8; 0x10000];
@@ -670,7 +677,6 @@ mod tests {
         assert_eq!(results[0].psg_load, Some((7, 0x3F)));
     }
 
-    #[test]
     fn dma_int_command_sets_held_interrupt_when_auto_clear_disabled() {
         let mut asic = Asic::new();
         let mut ram = vec![0u8; 0x10000];
@@ -688,7 +694,6 @@ mod tests {
         assert!(asic.irq_unacknowledged());
     }
 
-    #[test]
     fn dcsr_write_acknowledges_and_clears_held_interrupt() {
         let mut asic = Asic::new();
         let mut ram = vec![0u8; 0x10000];
@@ -703,14 +708,19 @@ mod tests {
         asic.write_high(0x0C0F, 0x40); // ack DMA0
         assert!(!asic.irq_unacknowledged());
     }
-
+    /// Merged (every check kept): `dma_load_command_reports_psg_write`, `dma_int_command_sets_held_interrupt_when_auto_clear_disabled`, `dcsr_write_acknowledges_and_clears_held_interrupt`.
     #[test]
+    fn dma_commands() {
+        dma_load_command_reports_psg_write();
+        dma_int_command_sets_held_interrupt_when_auto_clear_disabled();
+        dcsr_write_acknowledges_and_clears_held_interrupt();
+    }
+
     fn locked_asic_reports_zero_vector_byte() {
         let mut asic = Asic::new();
         assert_eq!(asic.interrupt_vector_byte(), 0x00);
     }
 
-    #[test]
     fn unlocked_idle_asic_reports_raster_vector() {
         let mut asic = Asic::new();
         unlock(&mut asic);
@@ -718,8 +728,13 @@ mod tests {
         // the raster cause (6).
         assert_eq!(asic.interrupt_vector_byte(), 6);
     }
-
+    /// Merged (every check kept): `locked_asic_reports_zero_vector_byte`, `unlocked_idle_asic_reports_raster_vector`.
     #[test]
+    fn vector_byte() {
+        locked_asic_reports_zero_vector_byte();
+        unlocked_idle_asic_reports_raster_vector();
+    }
+
     fn analog_axis_defaults_centered_and_is_settable() {
         let asic = Asic::new();
         assert_eq!(asic.analog_read(0), 0x1F);
@@ -728,12 +743,17 @@ mod tests {
         assert_eq!(asic.analog_read(0), 0x3F);
     }
 
-    #[test]
     fn unused_analog_channels_report_fixed_idle_pattern() {
         let asic = Asic::new();
         assert_eq!(asic.analog_read(4), 0x3F);
         assert_eq!(asic.analog_read(5), 0x00);
         assert_eq!(asic.analog_read(6), 0x3F);
         assert_eq!(asic.analog_read(7), 0x00);
+    }
+    /// Merged (every check kept): `analog_axis_defaults_centered_and_is_settable`, `unused_analog_channels_report_fixed_idle_pattern`.
+    #[test]
+    fn analog_channels() {
+        analog_axis_defaults_centered_and_is_settable();
+        unused_analog_channels_report_fixed_idle_pattern();
     }
 }

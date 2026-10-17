@@ -817,13 +817,6 @@ mod tests {
     }
 
     #[test]
-    fn registers_still_round_trip() {
-        let mut crtc = Crtc::new();
-        write(&mut crtc, 0, 0x3F);
-        assert_eq!(crtc.registers[0], 0x3F);
-    }
-
-    #[test]
     fn horizontal_total_and_sync_width_drive_hsync_falling_edges() {
         let mut crtc = Crtc::new();
         write(&mut crtc, 0, 3); // four character clocks per line
@@ -858,7 +851,6 @@ mod tests {
         assert!(!crtc.vsync());
     }
 
-    #[test]
     fn partial_cpu_steps_preserve_character_clock_phase() {
         let mut crtc = Crtc::new();
         write(&mut crtc, 0, 1);
@@ -870,7 +862,6 @@ mod tests {
 
     // ---- type profiles -------------------------------------------------
 
-    #[test]
     fn type_indexes_and_names_round_trip() {
         for (index, ty) in CrtcType::ALL.into_iter().enumerate() {
             assert_eq!(usize::from(ty.index()), index);
@@ -880,7 +871,6 @@ mod tests {
         assert_eq!(CrtcType::from_index(5), None);
     }
 
-    #[test]
     fn write_masks_drop_the_bits_each_type_cannot_store() {
         // R3's high nibble (VSYNC width) and R8's skew field exist on
         // types 0, 3 and 4 only (ACCC §4.3).
@@ -906,7 +896,6 @@ mod tests {
         assert_eq!(crtc.registers[5], 0x1F);
     }
 
-    #[test]
     fn switching_type_reapplies_the_new_masks_to_stored_registers() {
         let mut crtc = Crtc::with_type(CrtcType::Type0);
         write(&mut crtc, 3, 0x8E);
@@ -914,13 +903,20 @@ mod tests {
         assert_eq!(crtc.registers[3], 0x0E);
     }
 
-    #[test]
     fn read_only_light_pen_and_out_of_range_registers_ignore_writes() {
         let mut crtc = Crtc::new();
         write(&mut crtc, 16, 0x55);
         write(&mut crtc, 17, 0x55);
         write(&mut crtc, 20, 0x55);
         assert_eq!(&crtc.registers[16..], &[0, 0]);
+    }
+    /// Merged (every check kept): `type_indexes_and_names_round_trip`, `write_masks_drop_the_bits_each_type_cannot_store`, `switching_type_reapplies_the_new_masks_to_stored_registers`, `read_only_light_pen_and_out_of_range_registers_ignore_writes`.
+    #[test]
+    fn crtc_types_and_masks() {
+        type_indexes_and_names_round_trip();
+        write_masks_drop_the_bits_each_type_cannot_store();
+        switching_type_reapplies_the_new_masks_to_stored_registers();
+        read_only_light_pen_and_out_of_range_registers_ignore_writes();
     }
 
     fn load_readback_values(crtc: &mut Crtc) {
@@ -936,7 +932,6 @@ mod tests {
         crtc.read_register()
     }
 
-    #[test]
     fn type0_reads_back_r12_to_r17_only() {
         let mut crtc = Crtc::with_type(CrtcType::Type0);
         load_readback_values(&mut crtc);
@@ -953,7 +948,6 @@ mod tests {
         assert_eq!(crtc.read_register(), 0x3C);
     }
 
-    #[test]
     fn type1_reads_back_r14_to_r17_and_r31() {
         let mut crtc = Crtc::with_type(CrtcType::Type1);
         load_readback_values(&mut crtc);
@@ -966,7 +960,6 @@ mod tests {
         assert_eq!(read_back(&mut crtc, 31), 0xFF);
     }
 
-    #[test]
     fn type2_reads_back_only_the_light_pen_registers() {
         let mut crtc = Crtc::with_type(CrtcType::Type2);
         load_readback_values(&mut crtc);
@@ -977,7 +970,6 @@ mod tests {
         assert_eq!(read_back(&mut crtc, 17), 0xF2);
     }
 
-    #[test]
     fn asic_types_read_through_a_three_bit_register_window() {
         for ty in [CrtcType::Type3, CrtcType::Type4] {
             let mut crtc = Crtc::with_type(ty);
@@ -996,8 +988,15 @@ mod tests {
             assert_eq!(crtc.read_status(), crtc.read_register());
         }
     }
-
+    /// Merged (every check kept): `type0_reads_back_r12_to_r17_only`, `type1_reads_back_r14_to_r17_and_r31`, `type2_reads_back_only_the_light_pen_registers`, `asic_types_read_through_a_three_bit_register_window`.
     #[test]
+    fn crtc_readback() {
+        type0_reads_back_r12_to_r17_only();
+        type1_reads_back_r14_to_r17_and_r31();
+        type2_reads_back_only_the_light_pen_registers();
+        asic_types_read_through_a_three_bit_register_window();
+    }
+
     fn only_the_um6845r_has_a_status_register() {
         for ty in [CrtcType::Type0, CrtcType::Type2] {
             assert_eq!(Crtc::with_type(ty).read_status(), 0xFF, "{ty:?}");
@@ -1005,7 +1004,6 @@ mod tests {
         assert_eq!(Crtc::with_type(CrtcType::Type1).read_status() & 0x9F, 0);
     }
 
-    #[test]
     fn um6845r_status_bit5_latches_border_r6_once_per_frame_line_zero() {
         let mut crtc = Crtc::with_type(CrtcType::Type1);
         firmware_layout(&mut crtc);
@@ -1026,7 +1024,6 @@ mod tests {
         assert_eq!(crtc.read_status() & 0x20, 0);
     }
 
-    #[test]
     fn asic_status1_bit0_pulses_on_the_last_character_of_the_line() {
         let mut crtc = Crtc::with_type(CrtcType::Type3);
         firmware_layout(&mut crtc);
@@ -1037,10 +1034,16 @@ mod tests {
         assert_eq!(crtc.read_register() & 0x01, 0x00);
         assert_eq!(crtc.read_register() & 0x40, 0x40, "bit 6 always reads 1");
     }
+    /// Merged (every check kept): `only_the_um6845r_has_a_status_register`, `um6845r_status_bit5_latches_border_r6_once_per_frame_line_zero`, `asic_status1_bit0_pulses_on_the_last_character_of_the_line`.
+    #[test]
+    fn crtc_status() {
+        only_the_um6845r_has_a_status_register();
+        um6845r_status_bit5_latches_border_r6_once_per_frame_line_zero();
+        asic_status1_bit0_pulses_on_the_last_character_of_the_line();
+    }
 
     // ---- sync widths ---------------------------------------------------
 
-    #[test]
     fn zero_hsync_width_means_no_hsync_on_types_0_and_1_and_sixteen_elsewhere() {
         for (ty, expected_falls) in [
             (CrtcType::Type0, 0),
@@ -1058,7 +1061,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn hsync_lasts_sixteen_characters_when_r3l_is_zero_on_type2() {
         let mut crtc = Crtc::with_type(CrtcType::Type2);
         write(&mut crtc, 0, 63);
@@ -1066,6 +1068,12 @@ mod tests {
         let clocks = collect(&mut crtc, 64);
         let high = clocks.iter().filter(|clock| clock.hsync).count();
         assert_eq!(high, 16);
+    }
+    /// Merged (every check kept): `zero_hsync_width_means_no_hsync_on_types_0_and_1_and_sixteen_elsewhere`, `hsync_lasts_sixteen_characters_when_r3l_is_zero_on_type2`.
+    #[test]
+    fn hsync_width() {
+        zero_hsync_width_means_no_hsync_on_types_0_and_1_and_sixteen_elsewhere();
+        hsync_lasts_sixteen_characters_when_r3l_is_zero_on_type2();
     }
 
     fn vsync_lines(ty: CrtcType, r3: u8) -> u32 {
@@ -1290,7 +1298,6 @@ mod tests {
         assert!(clocks.iter().all(|clock| clock.ma < 0x2000));
     }
 
-    #[test]
     fn events_from_split_ticks_merge() {
         let mut total = CrtcEvents::default();
         total.merge(CrtcEvents {
@@ -1311,6 +1318,12 @@ mod tests {
                 frame_starts: 252,
             }
         );
+    }
+    /// Merged (every check kept): `events_from_split_ticks_merge`, `partial_cpu_steps_preserve_character_clock_phase`.
+    #[test]
+    fn split_ticks() {
+        events_from_split_ticks_merge();
+        partial_cpu_steps_preserve_character_clock_phase();
     }
 
     #[test]

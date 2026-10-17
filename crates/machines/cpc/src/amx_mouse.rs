@@ -198,7 +198,6 @@ mod tests {
 
     const LOW_TSTATES: u32 = PULSE_PERIOD_TSTATES - PULSE_GAP_TSTATES;
 
-    #[test]
     fn a_disabled_mouse_contributes_nothing() {
         let mut mouse = AmxMouse::default();
         mouse.motion(5, -5);
@@ -221,7 +220,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn one_mickey_is_exactly_one_low_pulse_then_idle() {
         let mut mouse = enabled();
         mouse.motion(1, 0);
@@ -243,7 +241,6 @@ mod tests {
         assert_eq!(mouse.line9_mask(), 0xFF, "and it stays idle");
     }
 
-    #[test]
     fn n_mickeys_are_n_separate_pulses_with_a_high_gap_between() {
         let mut mouse = enabled();
         mouse.motion(0, 3);
@@ -262,7 +259,6 @@ mod tests {
         assert_eq!(mouse.line9_mask(), 0xFF);
     }
 
-    #[test]
     fn opposite_motion_cancels_in_the_queue() {
         let mut mouse = enabled();
         mouse.motion(4, 0);
@@ -273,7 +269,6 @@ mod tests {
         assert_eq!(mouse.outstanding().0, 0);
     }
 
-    #[test]
     fn queued_motion_is_capped_per_axis() {
         let mut mouse = enabled();
         for _ in 0..10 {
@@ -283,6 +278,12 @@ mod tests {
         // The queue is capped; a pulse already in flight is on top of that.
         assert_eq!(x, MAX_PENDING + 1, "x capped");
         assert_eq!(y, -(MAX_PENDING + 1), "y capped");
+    }
+    /// Merged (every check kept): `opposite_motion_cancels_in_the_queue`, `queued_motion_is_capped_per_axis`.
+    #[test]
+    fn queue_rules() {
+        opposite_motion_cancels_in_the_queue();
+        queued_motion_is_capped_per_axis();
     }
 
     #[test]
@@ -304,7 +305,6 @@ mod tests {
         assert_eq!(mouse.line9_mask(), 0xFF);
     }
 
-    #[test]
     fn disabling_clears_pending_motion_and_buttons() {
         let mut mouse = enabled();
         mouse.motion(9, 9);
@@ -314,13 +314,25 @@ mod tests {
         assert_eq!(mouse.line9_mask(), 0xFF);
         assert_eq!(mouse.outstanding(), (0, 0));
     }
-
+    /// Merged (every check kept): `a_disabled_mouse_contributes_nothing`, `disabling_clears_pending_motion_and_buttons`.
     #[test]
+    fn disabled_mouse() {
+        a_disabled_mouse_contributes_nothing();
+        disabling_clears_pending_motion_and_buttons();
+    }
+
     fn a_long_tick_drains_the_whole_queue() {
         let mut mouse = enabled();
         mouse.motion(10, -10);
         mouse.tick(PULSE_PERIOD_TSTATES * 11);
         assert_eq!(mouse.outstanding(), (0, 0));
         assert_eq!(mouse.line9_mask(), 0xFF);
+    }
+    /// Merged (every check kept): `one_mickey_is_exactly_one_low_pulse_then_idle`, `n_mickeys_are_n_separate_pulses_with_a_high_gap_between`, `a_long_tick_drains_the_whole_queue`.
+    #[test]
+    fn mickey_pulses() {
+        one_mickey_is_exactly_one_low_pulse_then_idle();
+        n_mickeys_are_n_separate_pulses_with_a_high_gap_between();
+        a_long_tick_drains_the_whole_queue();
     }
 }

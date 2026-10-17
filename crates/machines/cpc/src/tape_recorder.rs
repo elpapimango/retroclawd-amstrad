@@ -120,7 +120,6 @@ mod tests {
         recorder.pulses.clone()
     }
 
-    #[test]
     fn edges_with_the_motor_off_record_nothing() {
         let mut recorder = TapeRecorder::default();
         recorder.mic(100, true);
@@ -144,7 +143,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn time_with_the_motor_off_is_not_tape_and_sessions_get_a_one_second_gap() {
         let mut recorder = TapeRecorder::default();
         recorder.motor(0, true);
@@ -169,8 +167,13 @@ mod tests {
             ]
         );
     }
-
+    /// Merged (every check kept): `edges_with_the_motor_off_record_nothing`, `time_with_the_motor_off_is_not_tape_and_sessions_get_a_one_second_gap`.
     #[test]
+    fn recorder_motor_rules() {
+        edges_with_the_motor_off_record_nothing();
+        time_with_the_motor_off_is_not_tape_and_sessions_get_a_one_second_gap();
+    }
+
     fn conversion_to_the_tape_clock_keeps_total_time() {
         let mut recorder = TapeRecorder::default();
         recorder.motor(0, true);
@@ -188,7 +191,6 @@ mod tests {
         assert!(total.abs_diff(expected) <= 1, "{total} vs {expected}");
     }
 
-    #[test]
     fn clearing_forgets_the_pulses_but_not_the_line_state() {
         let mut recorder = TapeRecorder::default();
         recorder.motor(0, true);
@@ -202,5 +204,11 @@ mod tests {
         recorder.mic(100, true);
         recorder.mic(150, false);
         assert_eq!(recorded(&recorder), vec![(50, true)]);
+    }
+    /// Merged (every check kept): `conversion_to_the_tape_clock_keeps_total_time`, `clearing_forgets_the_pulses_but_not_the_line_state`.
+    #[test]
+    fn recorder_conversion_and_clear() {
+        conversion_to_the_tape_clock_keeps_total_time();
+        clearing_forgets_the_pulses_but_not_the_line_state();
     }
 }

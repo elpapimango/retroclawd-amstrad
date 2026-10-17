@@ -27,7 +27,6 @@ pub(crate) fn decode_mode2(byte: u8) -> [u8; 8] {
 mod tests {
     use super::*;
 
-    #[test]
     fn mode0_decodes_two_four_bit_interleaved_pixels() {
         // Layout L0 R0 L2 R2 L1 R1 L3 R3: left=13, right=6.
         assert_eq!(decode_mode0(0xB6), [13, 6]);
@@ -37,7 +36,6 @@ mod tests {
         assert_eq!(decode_mode0(0x40), [0, 1]);
     }
 
-    #[test]
     fn mode1_uses_the_high_nibble_for_pen_bit_zero() {
         assert_eq!(decode_mode1(0x80, 0), 1);
         assert_eq!(decode_mode1(0x08, 0), 2);
@@ -47,9 +45,15 @@ mod tests {
         assert_eq!(decode_mode1(0x10, 3), 1);
     }
 
-    #[test]
     fn mode2_decodes_eight_one_bit_pixels_msb_first() {
         assert_eq!(decode_mode2(0b1010_0000), [1, 0, 1, 0, 0, 0, 0, 0]);
         assert_eq!(decode_mode2(0x01), [0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+    /// Merged (every check kept): `mode0_decodes_two_four_bit_interleaved_pixels`, `mode1_uses_the_high_nibble_for_pen_bit_zero`, `mode2_decodes_eight_one_bit_pixels_msb_first`.
+    #[test]
+    fn pixel_decoding() {
+        mode0_decodes_two_four_bit_interleaved_pixels();
+        mode1_uses_the_high_nibble_for_pen_bit_zero();
+        mode2_decodes_eight_one_bit_pixels_msb_first();
     }
 }

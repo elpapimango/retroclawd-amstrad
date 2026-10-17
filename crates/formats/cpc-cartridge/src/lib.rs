@@ -381,7 +381,6 @@ mod tests {
         assert_eq!(parse_lenient(b"RIFF").unwrap_err(), Error::TooShort);
     }
 
-    #[test]
     fn rejects_malformed_and_truncated_data() {
         assert_eq!(parse(b"RIFF"), Err(Error::TooShort));
 
@@ -402,7 +401,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn rejects_duplicate_and_out_of_range_ids() {
         assert_eq!(
             parse(&image(&[(4, &[1]), (4, &[2])])),
@@ -417,8 +415,13 @@ mod tests {
         invalid[12..16].copy_from_slice(b"zz01");
         assert_eq!(parse(&invalid), Err(Error::InvalidChunkId(*b"zz01")));
     }
-
+    /// Merged (every check kept): `rejects_malformed_and_truncated_data`, `rejects_duplicate_and_out_of_range_ids`.
     #[test]
+    fn rejections() {
+        rejects_malformed_and_truncated_data();
+        rejects_duplicate_and_out_of_range_ids();
+    }
+
     fn writer_canonicalizes_sparse_order_and_short_data() {
         let cartridge = Cartridge {
             pages: vec![
@@ -441,7 +444,6 @@ mod tests {
         assert!(parsed.pages[0].data[2..].iter().all(|&byte| byte == 0));
     }
 
-    #[test]
     fn writer_round_trip() {
         let cartridge = Cartridge {
             pages: vec![CartridgePage {
@@ -453,7 +455,6 @@ mod tests {
         assert_eq!(reparsed, cartridge);
     }
 
-    #[test]
     fn writer_validates_pages() {
         assert_eq!(
             write(&Cartridge {
@@ -482,5 +483,12 @@ mod tests {
                 length: PAGE_SIZE + 1,
             })
         );
+    }
+    /// Merged (every check kept): `writer_canonicalizes_sparse_order_and_short_data`, `writer_round_trip`, `writer_validates_pages`.
+    #[test]
+    fn writer_cases() {
+        writer_canonicalizes_sparse_order_and_short_data();
+        writer_round_trip();
+        writer_validates_pages();
     }
 }

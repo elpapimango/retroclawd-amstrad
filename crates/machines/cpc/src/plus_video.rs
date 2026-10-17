@@ -84,7 +84,6 @@ mod tests {
         asic.write_high(0x0423, 0x0F); // G=15
     }
 
-    #[test]
     fn sprite_pixel_composites_over_the_picture_relative_to_the_display_origin() {
         let mut asic = Asic::new();
         sprite_zero_all_colour_one(&mut asic, 10, 10);
@@ -100,7 +99,6 @@ mod tests {
         assert_eq!(&rgb[at(30, 39)..at(30, 39) + 3], &[0, 0, 0]);
     }
 
-    #[test]
     fn sprites_are_clipped_at_the_picture_edges() {
         let mut asic = Asic::new();
         sprite_zero_all_colour_one(&mut asic, 0, 0);
@@ -116,5 +114,11 @@ mod tests {
         assert_eq!(&rgb[at(0, 0)..at(0, 0) + 3], &[255, 255, 0]);
         assert_eq!(&rgb[at(7, 7)..at(7, 7) + 3], &[255, 255, 0]);
         assert_eq!(&rgb[at(8, 8)..at(8, 8) + 3], &[0, 0, 0]);
+    }
+    /// Merged (every check kept): `sprite_pixel_composites_over_the_picture_relative_to_the_display_origin`, `sprites_are_clipped_at_the_picture_edges`.
+    #[test]
+    fn plus_sprites() {
+        sprite_pixel_composites_over_the_picture_relative_to_the_display_origin();
+        sprites_are_clipped_at_the_picture_edges();
     }
 }

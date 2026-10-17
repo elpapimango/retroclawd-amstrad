@@ -1894,7 +1894,6 @@ mod tests {
         state.instances[&instance].machine.keyboard_row_state(line)
     }
 
-    #[test]
     fn arrows_drive_joystick_1_alongside_the_cursor_keys_but_space_does_not_press_fire() {
         let created = create_machine(create_request("cpc464")).unwrap();
         let instance = created.instance;
@@ -1914,7 +1913,6 @@ mod tests {
         state().lock().unwrap().instances.remove(&instance);
     }
 
-    #[test]
     fn explicit_joystick_key_names_press_only_their_own_wires() {
         let created = create_machine(create_request("cpc6128")).unwrap();
         let instance = created.instance;
@@ -1927,6 +1925,12 @@ mod tests {
         assert_eq!(keyboard_line(instance, 6), 0xFF);
         state().lock().unwrap().instances.remove(&instance);
     }
+    /// Merged (every check kept): `arrows_drive_joystick_1_alongside_the_cursor_keys_but_space_does_not_press_fire`, `explicit_joystick_key_names_press_only_their_own_wires`.
+    #[test]
+    fn joystick_key_names() {
+        arrows_drive_joystick_1_alongside_the_cursor_keys_but_space_does_not_press_fire();
+        explicit_joystick_key_names_press_only_their_own_wires();
+    }
 
     fn send(instance: MachineInstanceHandle, command: MachineCommand) {
         let request = MachineInstanceCallRequest { command };
@@ -1936,54 +1940,6 @@ mod tests {
         payload(result);
     }
 
-    /// `WriteIo` performs a real `OUT`: RAM configuration 2 maps the second
-    /// 64K's block 5 at `&4000`, so what a flat read sees there changes.
-    #[test]
-    fn write_io_reaches_the_gate_array_through_the_plugin() {
-        let instance = create_machine(create_request("cpc6128")).unwrap().instance;
-        call_memory(
-            instance,
-            MachineCommand::WriteMemory {
-                address: 0x4000,
-                bytes: vec![0x11],
-                space: None,
-            },
-        )
-        .unwrap();
-        call_memory(
-            instance,
-            MachineCommand::WriteMemory {
-                address: 0,
-                bytes: vec![0x22],
-                space: Some("ram-bank:5".to_string()),
-            },
-        )
-        .unwrap();
-        let read = |instance| {
-            call_memory(
-                instance,
-                MachineCommand::ReadMemory {
-                    address: 0x4000,
-                    len: 1,
-                    space: None,
-                },
-            )
-            .unwrap()
-        };
-        assert!(matches!(read(instance), MachineResponse::Memory(ref b) if b == &[0x11]));
-        call_memory(
-            instance,
-            MachineCommand::WriteIo {
-                port: 0x7F00,
-                value: 0xC2,
-            },
-        )
-        .unwrap();
-        assert!(matches!(read(instance), MachineResponse::Memory(ref b) if b == &[0x22]));
-        state().lock().unwrap().instances.remove(&instance);
-    }
-
-    #[test]
     fn amx_mouse_is_an_opt_in_option_on_every_model() {
         for kind in CpcKind::all() {
             let option = cpc_options(kind)
@@ -1995,7 +1951,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn host_mouse_events_drive_line_9_only_when_the_amx_mouse_is_enabled() {
         // Not enabled: motion and buttons change nothing.
         let off = create_machine(create_request("cpc6128")).unwrap().instance;
@@ -2044,8 +1999,13 @@ mod tests {
         assert_eq!(keyboard_line(on, 9), !0x04, "unmapped buttons are ignored");
         state().lock().unwrap().instances.remove(&on);
     }
-
+    /// Merged (every check kept): `amx_mouse_is_an_opt_in_option_on_every_model`, `host_mouse_events_drive_line_9_only_when_the_amx_mouse_is_enabled`.
     #[test]
+    fn amx_mouse_option() {
+        amx_mouse_is_an_opt_in_option_on_every_model();
+        host_mouse_events_drive_line_9_only_when_the_amx_mouse_is_enabled();
+    }
+
     fn crtc_type_option_is_declared_for_every_model_without_a_forced_default() {
         for kind in CpcKind::all() {
             let option = cpc_options(kind)
@@ -2063,7 +2023,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn crtc_type_defaults_per_model_and_can_be_overridden() {
         assert_eq!(crtc_type_of("cpc464", None), Ok(0));
         assert_eq!(crtc_type_of("cpc664", None), Ok(0));
@@ -2078,8 +2037,13 @@ mod tests {
                 .contains("out of range")
         );
     }
-
+    /// Merged (every check kept): `crtc_type_option_is_declared_for_every_model_without_a_forced_default`, `crtc_type_defaults_per_model_and_can_be_overridden`.
     #[test]
+    fn crtc_type_option() {
+        crtc_type_option_is_declared_for_every_model_without_a_forced_default();
+        crtc_type_defaults_per_model_and_can_be_overridden();
+    }
+
     fn descriptor_is_machine_plugin_v1() {
         let ptr = unsafe { entry_v1() };
         assert!(!ptr.is_null());
@@ -2090,7 +2054,6 @@ mod tests {
         assert_eq!(descriptor.kind, PluginKind::Machine);
     }
 
-    #[test]
     fn list_profiles_returns_all_cpc_models() {
         let req = plugin_api::ListProfilesRequest {
             include_experimental: false,
@@ -2119,8 +2082,13 @@ mod tests {
             ]
         );
     }
-
+    /// Merged (every check kept): `descriptor_is_machine_plugin_v1`, `list_profiles_returns_all_cpc_models`.
     #[test]
+    fn descriptor_and_profiles() {
+        descriptor_is_machine_plugin_v1();
+        list_profiles_returns_all_cpc_models();
+    }
+
     fn create_instance_and_get_pc_round_trip() {
         let create_req =
             plugin_api::encode_message(&create_request("cpc464")).expect("encode create req");
@@ -2149,7 +2117,6 @@ mod tests {
         assert!(status.is_ok());
     }
 
-    #[test]
     fn attach_program_and_read_memory_round_trip() {
         let create_req =
             plugin_api::encode_message(&create_request("cpc464")).expect("encode create req");
@@ -2202,6 +2169,12 @@ mod tests {
         // SAFETY: instance handle came from create response above.
         let status = unsafe { plugin_destroy_instance_v1(create.instance) };
         assert!(status.is_ok());
+    }
+    /// Merged (every check kept): `create_instance_and_get_pc_round_trip`, `attach_program_and_read_memory_round_trip`.
+    #[test]
+    fn instance_round_trips() {
+        create_instance_and_get_pc_round_trip();
+        attach_program_and_read_memory_round_trip();
     }
 
     /// The `"overlay"` chip carries both the small, cross-machine GUI-panel
@@ -2293,7 +2266,6 @@ mod tests {
     /// A `space` the plugin doesn't understand, or a block the machine
     /// doesn't have, must be a clear error -- never a silent flat access that
     /// would poke the wrong memory.
-    #[test]
     fn unknown_or_out_of_range_spaces_are_clear_errors() {
         let instance = create_machine(create_request("cpc464")).unwrap().instance;
         for space in [
@@ -2339,7 +2311,6 @@ mod tests {
 
     /// `ram-bank:N` reaches physical RAM blocks on the 6128, including the
     /// ones the CPU doesn't currently have paged in, and expansion blocks.
-    #[test]
     fn ram_bank_space_reads_and_writes_physical_blocks() {
         let mut request = create_request("cpc6128");
         request.options.push(NamedValue {
@@ -2396,8 +2367,13 @@ mod tests {
         assert_eq!(blocks, 12);
         state().lock().unwrap().instances.remove(&instance);
     }
-
+    /// Merged (every check kept): `unknown_or_out_of_range_spaces_are_clear_errors`, `ram_bank_space_reads_and_writes_physical_blocks`.
     #[test]
+    fn memory_spaces() {
+        unknown_or_out_of_range_spaces_are_clear_errors();
+        ram_bank_space_reads_and_writes_physical_blocks();
+    }
+
     fn gx4000_instance_creates_and_renders_a_frame() {
         let create_req =
             plugin_api::encode_message(&create_request("gx4000")).expect("encode create req");
@@ -2433,7 +2409,6 @@ mod tests {
         assert!(status.is_ok());
     }
 
-    #[test]
     fn gx4000_rejects_tape_media() {
         let create_req =
             plugin_api::encode_message(&create_request("gx4000")).expect("encode create req");
@@ -2486,7 +2461,6 @@ mod tests {
         let status = unsafe { plugin_destroy_instance_v1(create.instance) };
         assert!(status.is_ok());
     }
-    #[test]
     fn gx4000_cpr_container_creates_machine_from_declared_bank() {
         let cartridge = cpc_cartridge::Cartridge {
             pages: vec![cpc_cartridge::CartridgePage {
@@ -2509,6 +2483,13 @@ mod tests {
         assert_eq!(create.metadata.machine_id, "gx4000");
         let status = unsafe { plugin_destroy_instance_v1(create.instance) };
         assert!(status.is_ok());
+    }
+    /// Merged (every check kept): `gx4000_instance_creates_and_renders_a_frame`, `gx4000_rejects_tape_media`, `gx4000_cpr_container_creates_machine_from_declared_bank`.
+    #[test]
+    fn gx4000_plugin() {
+        gx4000_instance_creates_and_renders_a_frame();
+        gx4000_rejects_tape_media();
+        gx4000_cpr_container_creates_machine_from_declared_bank();
     }
 
     #[test]

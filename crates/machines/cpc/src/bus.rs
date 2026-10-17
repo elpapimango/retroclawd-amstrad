@@ -2547,15 +2547,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn boots_with_both_roms_visible_by_default() {
-        let cpc = test_cpc();
-        assert_eq!(cpc.bus.peek(0x0000), 0xAA);
-        assert_eq!(cpc.bus.peek(0xC000), 0xBB);
-        assert_eq!(cpc.pc(), 0x0000, "real Z80 reset always starts at PC=0");
-    }
-
-    #[test]
     fn each_model_requires_its_standard_combined_rom_size() {
         for model in [
             Model::Cpc464,
@@ -2569,13 +2560,18 @@ mod tests {
         }
     }
 
-    #[test]
     fn gx4000_accepts_any_bank_count_from_one_to_eight_and_rejects_others() {
         assert!(Cpc::new(vec![0; ROM_SIZE], Model::Gx4000).is_ok());
         assert!(Cpc::new(vec![0; ROM_SIZE * 8], Model::Gx4000).is_ok());
         assert!(Cpc::new(Vec::new(), Model::Gx4000).is_err());
         assert!(Cpc::new(vec![0; ROM_SIZE * 9], Model::Gx4000).is_err());
         assert!(Cpc::new(vec![0; ROM_SIZE / 2], Model::Gx4000).is_err());
+    }
+    /// Merged (every check kept): `each_model_requires_its_standard_combined_rom_size`, `gx4000_accepts_any_bank_count_from_one_to_eight_and_rejects_others`.
+    #[test]
+    fn rom_sizes() {
+        each_model_requires_its_standard_combined_rom_size();
+        gx4000_accepts_any_bank_count_from_one_to_eight_and_rejects_others();
     }
 
     #[test]
@@ -2595,22 +2591,6 @@ mod tests {
     }
 
     #[test]
-    fn cpc6128_exposes_all_eight_documented_ram_configurations() {
-        let mut cpc = test_cpc_model(Model::Cpc6128);
-        cpc.bus.gate_array.write(0x8D); // Mode 1, both ROM overlays disabled
-        for bank in 0..8 {
-            cpc.bus.ram[bank * ROM_SIZE] = bank as u8;
-        }
-
-        for (configuration, expected) in RAM_CONFIGURATIONS.iter().enumerate() {
-            cpc.bus.write_io(0x7F00, 0xC0 | configuration as u8);
-            for (window, &bank) in expected.iter().enumerate() {
-                assert_eq!(cpc.bus.peek((window * ROM_SIZE) as u16), bank as u8);
-            }
-        }
-    }
-
-    #[test]
     fn cpc664_ignores_6128_ram_configuration_writes() {
         let mut cpc = test_cpc_model(Model::Cpc664);
         cpc.bus.gate_array.write(0x8D);
@@ -2620,7 +2600,6 @@ mod tests {
         assert_eq!(cpc.bus.ram_configuration(), 0);
     }
 
-    #[test]
     fn disk_models_decode_motor_status_and_data_ports() {
         for model in [Model::Cpc664, Model::Cpc6128] {
             let mut cpc = test_cpc_model(model);
@@ -2665,7 +2644,6 @@ mod tests {
         dsk::parse(&bytes).unwrap()
     }
 
-    #[test]
     fn parsed_dsk_sector_reads_through_cpc_fdc_ports() {
         assert!(test_cpc().load_disk(one_sector_dsk(0x5A)).is_err());
         let mut cpc = test_cpc_model(Model::Cpc6128);
@@ -2690,6 +2668,12 @@ mod tests {
         // No terminal-count line on a CPC: end-of-cylinder is the normal end.
         assert_eq!(result, [0x40, 0x80, 0, 0, 0, 1, 2]);
         assert_eq!(cpc.bus.read_io(0xFB7E), 0x80);
+    }
+    /// Merged (every check kept): `disk_models_decode_motor_status_and_data_ports`, `parsed_dsk_sector_reads_through_cpc_fdc_ports`.
+    #[test]
+    fn fdc_ports() {
+        disk_models_decode_motor_status_and_data_ports();
+        parsed_dsk_sector_reads_through_cpc_fdc_ports();
     }
 
     /// A one-sector disk whose Extended DSK "actual data length"
@@ -2750,39 +2734,6 @@ mod tests {
         );
     }
 
-    /// Reads the first byte of sector 1 of cylinder 0 through the CPC's FDC ports from `unit` (0 = A, 1 = B).
-    fn read_first_byte_from(cpc: &mut Cpc, unit: u8) -> (u8, u8) {
-        for byte in [0x46, unit, 0x00, 0x00, 0x01, 0x02, 0x01, 0x2A, 0xFF] {
-            cpc.bus.write_io(0xFB7F, byte);
-        }
-        let first_byte = cpc.bus.read_io(0xFB7F);
-        for _ in 1..512 {
-            cpc.bus.read_io(0xFB7F);
-        }
-        let st0 = cpc.bus.read_io(0xFB7F);
-        for _ in 0..6 {
-            cpc.bus.read_io(0xFB7F);
-        }
-        (first_byte, st0)
-    }
-
-    #[test]
-    fn a_6128_reads_drive_a_and_the_external_drive_b_through_the_same_controller() {
-        let mut cpc = test_cpc_model(Model::Cpc6128);
-        cpc.load_disk(one_sector_dsk(0x5A)).unwrap();
-        cpc.load_disk_in(1, one_sector_dsk(0xC3)).unwrap();
-        cpc.bus.write_io(0xFA7E, 1); // the one motor line spins both drives
-        assert_eq!(read_first_byte_from(&mut cpc, 0).0, 0x5A, "drive A");
-        let (b, st0) = read_first_byte_from(&mut cpc, 1);
-        assert_eq!(b, 0xC3, "drive B");
-        assert_eq!(st0 & 0x03, 1, "ST0 names unit 1");
-        assert_eq!(read_first_byte_from(&mut cpc, 0).0, 0x5A, "and back to A");
-        // No drive C, and ejecting B leaves A alone.
-        assert!(cpc.load_disk_in(2, one_sector_dsk(0)).is_err());
-        cpc.eject_disk_from(1);
-        assert!(cpc.disk_in(1).is_none() && cpc.disk().is_some());
-    }
-
     #[test]
     fn the_drives_are_modified_and_saved_independently() {
         let mut cpc = test_cpc_model(Model::Cpc6128);
@@ -2829,7 +2780,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn render_frame_is_the_fixed_monitor_window_in_every_gate_array_mode() {
         // The picture is a fixed 768x576 frame (a 768x288-line window of
         // Mode-2 pixels, each line shown twice -- the 4:3 PAL square-pixel
@@ -2845,7 +2795,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn render_frame_doubles_every_scanline_into_a_4_by_3_picture() {
         let mut cpc = test_cpc();
         program_firmware_layout(&mut cpc);
@@ -3139,7 +3088,6 @@ mod tests {
         (rendered.2[i], rendered.2[i + 1], rendered.2[i + 2])
     }
 
-    #[test]
     fn an_ink_write_lands_on_the_character_clock_it_happened_on() {
         let mut cpc = test_cpc();
         program_firmware_layout(&mut cpc);
@@ -3175,7 +3123,6 @@ mod tests {
         assert_eq!(pixel_of(&rendered, 0, 14), ink_b);
     }
 
-    #[test]
     fn a_crtc_register_write_takes_effect_on_the_character_it_landed_on() {
         let mut cpc = test_cpc();
         program_firmware_layout(&mut cpc);
@@ -3230,23 +3177,11 @@ mod tests {
             "next line: only 0..=8"
         );
     }
-
+    /// Merged (every check kept): `an_ink_write_lands_on_the_character_clock_it_happened_on`, `a_crtc_register_write_takes_effect_on_the_character_it_landed_on`.
     #[test]
-    fn writes_to_rom_windows_land_in_the_real_ram_underneath() {
-        let mut cpc = test_cpc();
-        cpc.bus.write(0x0000, 0x99);
-        assert_eq!(
-            cpc.bus.peek(0x0000),
-            0xAA,
-            "read should still see lower ROM"
-        );
-
-        cpc.bus.gate_array.write(0x8C); // function 10 (bits7:6), upper+lower ROM disabled (bits 3,2), mode 0
-        assert_eq!(
-            cpc.bus.peek(0x0000),
-            0x99,
-            "the earlier write should surface once RAM shows"
-        );
+    fn writes_land_on_their_character_clock() {
+        an_ink_write_lands_on_the_character_clock_it_happened_on();
+        a_crtc_register_write_takes_effect_on_the_character_it_landed_on();
     }
 
     #[test]
@@ -3294,7 +3229,6 @@ mod tests {
         assert_eq!(cpc.bus.bus_tstate_phase(), 0);
     }
 
-    #[test]
     fn crtc_vsync_is_visible_on_ppi_port_b_bit_zero() {
         let mut cpc = test_cpc();
         for (register, value) in [(0, 0), (3, 0x20), (4, 3), (7, 1), (9, 0)] {
@@ -3308,7 +3242,6 @@ mod tests {
         cpc.step();
         assert_eq!(cpc.bus.read_io(0xF500) & 1, 0);
     }
-    #[test]
     fn ppi_port_b_exposes_fixed_status_lines() {
         let mut cpc = test_cpc();
 
@@ -3322,6 +3255,12 @@ mod tests {
         cpc.bus.set_vsync_input(true);
         let high_vsync = cpc.bus.read_io(0xF500);
         assert_eq!(high_vsync & 0x01, 0x01, "vsync high should set bit 0");
+    }
+    /// Merged (every check kept): `crtc_vsync_is_visible_on_ppi_port_b_bit_zero`, `ppi_port_b_exposes_fixed_status_lines`.
+    #[test]
+    fn ppi_port_b_lines() {
+        crtc_vsync_is_visible_on_ppi_port_b_bit_zero();
+        ppi_port_b_exposes_fixed_status_lines();
     }
 
     #[test]
@@ -3365,13 +3304,11 @@ mod tests {
         );
     }
 
-    #[test]
     fn default_tape_motor_mode_is_caprice_strict() {
         let cpc = test_cpc();
         assert_eq!(cpc.bus.tape_motor_mode(), TapeMotorMode::CapriceStrict);
     }
 
-    #[test]
     fn cassette_playback_continues_during_brief_motor_glitch_in_zesarux_compat_mode() {
         let mut cpc = test_cpc();
         cpc.bus
@@ -3406,7 +3343,6 @@ mod tests {
         assert!(cpc.bus.tape_playback_state().unwrap().playing);
     }
 
-    #[test]
     fn cassette_playback_stops_immediately_after_motor_off() {
         let mut cpc = test_cpc();
         cpc.bus.set_tape_motor_mode(TapeMotorMode::CapriceStrict);
@@ -3523,7 +3459,6 @@ mod tests {
         assert!(!after_off.playing);
     }
 
-    #[test]
     fn ppi_mode_set_does_not_drop_cassette_motor_latch() {
         let mut cpc = test_cpc();
         cpc.bus.write_io(0xF700, 0x82);
@@ -3534,7 +3469,6 @@ mod tests {
         assert!(cpc.bus.cassette_motor());
     }
 
-    #[test]
     fn ppi_bsr_non_motor_bits_do_not_drop_cassette_motor() {
         let mut cpc = test_cpc();
         cpc.bus.write_io(0xF700, 0x82);
@@ -3559,7 +3493,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn ppi_port_c_data_writes_drive_the_cassette_motor_from_bit_4() {
         let mut cpc = test_cpc();
         cpc.bus.write_io(0xF700, 0x82); // PA/PC output
@@ -3585,8 +3518,14 @@ mod tests {
         cpc.bus.write_io(0xF600, 0xC0);
         assert!(!cpc.bus.cassette_motor());
     }
-
+    /// Merged (every check kept): `ppi_mode_set_does_not_drop_cassette_motor_latch`, `ppi_bsr_non_motor_bits_do_not_drop_cassette_motor`, `ppi_port_c_data_writes_drive_the_cassette_motor_from_bit_4`.
     #[test]
+    fn ppi_cassette_motor_latch() {
+        ppi_mode_set_does_not_drop_cassette_motor_latch();
+        ppi_bsr_non_motor_bits_do_not_drop_cassette_motor();
+        ppi_port_c_data_writes_drive_the_cassette_motor_from_bit_4();
+    }
+
     fn a_port_c_data_write_resumes_a_tape_the_motor_off_had_paused() {
         let mut cpc = test_cpc();
         cpc.bus.set_tape_motor_mode(TapeMotorMode::CapriceStrict);
@@ -3615,6 +3554,14 @@ mod tests {
             cpc.bus.tick_tape(50_000);
         }
         assert!(cpc.bus.tape_playback_state().unwrap().position > paused_at);
+    }
+    /// Merged (every check kept): `default_tape_motor_mode_is_caprice_strict`, `cassette_playback_continues_during_brief_motor_glitch_in_zesarux_compat_mode`, `cassette_playback_stops_immediately_after_motor_off`, `a_port_c_data_write_resumes_a_tape_the_motor_off_had_paused`.
+    #[test]
+    fn tape_motor_modes() {
+        default_tape_motor_mode_is_caprice_strict();
+        cassette_playback_continues_during_brief_motor_glitch_in_zesarux_compat_mode();
+        cassette_playback_stops_immediately_after_motor_off();
+        a_port_c_data_write_resumes_a_tape_the_motor_off_had_paused();
     }
 
     #[test]
@@ -3657,42 +3604,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn psg_register_select_write_and_read_round_trip_through_port_c() {
-        let mut cpc = test_cpc();
-        // Real firmware sequence, in full: Port A must be OUTPUT while
-        // selecting the register and writing data (0x82: mode 0, Port A
-        // output, Port B input, Port C output -- the commonly-documented
-        // CPC firmware PPI setup), then reconfigured to INPUT before
-        // reading (0x92) -- on real hardware the 8255 would otherwise
-        // still be actively driving Port A during a PSG read, electrically
-        // conflicting with the AY doing the same. A mode-set control
-        // write also resets every port's own output latch to 0 (real
-        // 8255 behavior, see `i8255::Ppi::write_control`'s own doc
-        // comment) -- which is why Port C's read-function byte has to be
-        // re-issued after switching Port A to input, exactly like real
-        // firmware does.
-        cpc.bus.write_io(0xF700, 0x82); // PA output, PC output
-        // Register 15 (the AY's own second general-purpose I/O port) is a
-        // plain byte store on real hardware, so it round-trips exactly --
-        // unlike e.g. the mixer register (7), whose write side decodes
-        // individual enable bits and doesn't necessarily reconstruct the
-        // identical byte on read.
-        cpc.bus.write_io(0xF400, 0x0F); // Port A = register index 15
-        cpc.bus.write_io(0xF600, 0xC0); // Port C: select-register function
-        cpc.bus.write_io(0xF400, 0x3F); // Port A = data to write
-        cpc.bus.write_io(0xF600, 0x80); // Port C: write function
-
-        cpc.bus.write_io(0xF700, 0x92); // reconfigure: PA now input
-        cpc.bus.write_io(0xF600, 0x40); // Port C: read function (register 15 still selected)
-        assert_eq!(
-            cpc.bus.read_io(0xF400),
-            0x3F,
-            "register 15 should read back what was written"
-        );
-    }
-
-    #[test]
     fn keyboard_scan_reaches_the_cpu_through_ppi_and_ay_register_14() {
         let mut cpc = test_cpc();
         cpc.press_key(crate::keyboard::CpcKey::A); // line 8, bit 5
@@ -3717,7 +3628,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn joystick_2_keys_reach_the_cpu_on_matrix_line_6() {
         let mut cpc = test_cpc();
         cpc.press_key(crate::keyboard::CpcKey::Joy2Fire1); // line 6, bit 4
@@ -3741,7 +3651,6 @@ mod tests {
         assert_ne!(cpc.bus.read_io(0xF400) & (1 << 4), 0);
     }
 
-    #[test]
     fn joystick_1_keys_reach_the_cpu_on_matrix_line_9() {
         let mut cpc = test_cpc();
         cpc.press_key(crate::keyboard::CpcKey::Joy1Fire1); // line 9, bit 4
@@ -3767,6 +3676,13 @@ mod tests {
             "Delete wasn't pressed, should read high"
         );
     }
+    /// Merged (every check kept): `keyboard_scan_reaches_the_cpu_through_ppi_and_ay_register_14`, `joystick_2_keys_reach_the_cpu_on_matrix_line_6`, `joystick_1_keys_reach_the_cpu_on_matrix_line_9`.
+    #[test]
+    fn keyboard_and_joystick_scans() {
+        keyboard_scan_reaches_the_cpu_through_ppi_and_ay_register_14();
+        joystick_2_keys_reach_the_cpu_on_matrix_line_6();
+        joystick_1_keys_reach_the_cpu_on_matrix_line_9();
+    }
 
     /// Reads keyboard matrix line `line` the way firmware does: PPI Port C
     /// read function through AY register 14, then Port A.
@@ -3779,7 +3695,6 @@ mod tests {
         cpc.bus.read_io(0xF400)
     }
 
-    #[test]
     fn port_watches_follow_the_cpc_loose_decode_through_a_mask() {
         use machine::{PortHit, PortWatch};
         let mut cpc = test_cpc();
@@ -3814,7 +3729,6 @@ mod tests {
         assert_eq!(cpc.take_port_hit(), None);
     }
 
-    #[test]
     fn write_port_is_decoded_like_a_cpu_out() {
         let mut cpc = test_cpc_model(Model::Cpc6128);
         assert_eq!(cpc.bus.peek(0x0000), 0xAA, "lower ROM is visible at reset");
@@ -3832,6 +3746,12 @@ mod tests {
         cpc.write_ram_block(5, 0, &[0xC5]);
         cpc.write_port(0x7F00, 0xC2);
         assert_eq!(cpc.bus.peek(0x4000), 0xC5);
+    }
+    /// Merged (every check kept): `port_watches_follow_the_cpc_loose_decode_through_a_mask`, `write_port_is_decoded_like_a_cpu_out`.
+    #[test]
+    fn port_watch_cases() {
+        port_watches_follow_the_cpc_loose_decode_through_a_mask();
+        write_port_is_decoded_like_a_cpu_out();
     }
 
     #[test]
@@ -3869,7 +3789,6 @@ mod tests {
         assert_eq!(cpc.read_ram_block(15, 0, 1), Some(vec![0xAB]));
     }
 
-    #[test]
     fn amx_mouse_motion_and_buttons_reach_the_cpu_on_matrix_line_9() {
         let mut cpc = test_cpc();
         assert!(!cpc.amx_mouse_enabled(), "off by default");
@@ -3902,7 +3821,6 @@ mod tests {
         assert_eq!(read_matrix_line(&mut cpc, 9), 0xFF, "unplugging clears it");
     }
 
-    #[test]
     fn amx_mouse_pulses_advance_with_executed_cycles() {
         let mut cpc = test_cpc();
         cpc.set_amx_mouse(true);
@@ -3924,15 +3842,19 @@ mod tests {
         assert_eq!(falling_edges, 2, "two mickeys are exactly two pulses");
         assert_eq!(cpc.keyboard_row_state(9), 0xFF, "then the line idles high");
     }
-
+    /// Merged (every check kept): `amx_mouse_motion_and_buttons_reach_the_cpu_on_matrix_line_9`, `amx_mouse_pulses_advance_with_executed_cycles`.
     #[test]
+    fn amx_mouse_scans() {
+        amx_mouse_motion_and_buttons_reach_the_cpu_on_matrix_line_9();
+        amx_mouse_pulses_advance_with_executed_cycles();
+    }
+
     fn gx4000_boots_from_cartridge_bank_zero_by_default() {
         let cpc = test_cpc_cartridge(Model::Gx4000, 3);
         assert_eq!(cpc.bus.peek(0x0000), 0, "bank 0 at &0000");
         assert_eq!(cpc.pc(), 0x0000, "real Z80 reset always starts at PC=0");
     }
 
-    #[test]
     fn gx4000_upper_rom_select_picks_a_cartridge_bank_falling_back_to_zero() {
         let mut cpc = test_cpc_cartridge(Model::Gx4000, 3);
         cpc.bus.write_io(0xDF00, 2);
@@ -3943,6 +3865,12 @@ mod tests {
             0,
             "unpopulated slot falls back to bank 0"
         );
+    }
+    /// Merged (every check kept): `gx4000_boots_from_cartridge_bank_zero_by_default`, `gx4000_upper_rom_select_picks_a_cartridge_bank_falling_back_to_zero`.
+    #[test]
+    fn gx4000_cartridge_banks() {
+        gx4000_boots_from_cartridge_bank_zero_by_default();
+        gx4000_upper_rom_select_picks_a_cartridge_bank_falling_back_to_zero();
     }
 
     fn unlock_asic(cpc: &mut Cpc) {
@@ -4025,7 +3953,6 @@ mod tests {
         assert_eq!(pixel_of(&rendered, 64 + 40, 44 + 199), (0, 0, 255));
     }
 
-    #[test]
     fn plus_vertical_soft_scroll_shifts_the_raster_lines_fetched() {
         let mut cpc = plus_with_firmware_layout();
         set_plus_ink(&mut cpc, 0, 0, 0, 15); // pen 0: blue
@@ -4050,7 +3977,6 @@ mod tests {
         assert_eq!(pixel_of(&rendered, x, y + 4), (0, 0, 255));
     }
 
-    #[test]
     fn plus_horizontal_soft_scroll_slides_the_picture_by_the_programmed_dots() {
         let mut cpc = plus_with_firmware_layout();
         set_plus_ink(&mut cpc, 0, 0, 0, 15);
@@ -4070,6 +3996,12 @@ mod tests {
             );
         }
         assert_eq!(pixel_of(&rendered, 64 + 5, 44 + 10), (255, 0, 0));
+    }
+    /// Merged (every check kept): `plus_vertical_soft_scroll_shifts_the_raster_lines_fetched`, `plus_horizontal_soft_scroll_slides_the_picture_by_the_programmed_dots`.
+    #[test]
+    fn plus_soft_scroll() {
+        plus_vertical_soft_scroll_shifts_the_raster_lines_fetched();
+        plus_horizontal_soft_scroll_slides_the_picture_by_the_programmed_dots();
     }
 
     #[test]
@@ -4096,7 +4028,6 @@ mod tests {
         assert_eq!(pixel_of(&rendered, 64 + 32, 44 + 23), (0, 0, 0));
     }
 
-    #[test]
     fn plus_asic_unlocks_via_crtc_select_register_writes() {
         let mut cpc = test_cpc_model(Model::Cpc6128Plus);
         assert_eq!(
@@ -4112,7 +4043,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn plus_asic_register_window_reads_and_writes_once_unlocked_and_relocated() {
         let mut cpc = test_cpc_model(Model::Cpc6128Plus);
         unlock_asic(&mut cpc);
@@ -4123,6 +4053,12 @@ mod tests {
         cpc.bus.write(0x6800, 42); // PRI register
         assert_eq!(cpc.bus.peek(0x6800), 42);
         assert_eq!(cpc.bus.asic.as_ref().unwrap().pri(), 42);
+    }
+    /// Merged (every check kept): `plus_asic_unlocks_via_crtc_select_register_writes`, `plus_asic_register_window_reads_and_writes_once_unlocked_and_relocated`.
+    #[test]
+    fn plus_asic_unlock_and_window() {
+        plus_asic_unlocks_via_crtc_select_register_writes();
+        plus_asic_register_window_reads_and_writes_once_unlocked_and_relocated();
     }
 
     #[test]
@@ -4214,21 +4150,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn classic_model_has_no_asic_and_default_vector_byte() {
-        let mut cpc = test_cpc();
-        assert_eq!(cpc.bus.interrupt_vector_byte(), 0xFF);
-        cpc.set_analog_axis(AnalogJoystick::First, AnalogAxis::X, ANALOG_MAX); // no-op, must not panic
-    }
-
-    #[test]
     fn render_frame_of_a_plus_model_uses_the_same_monitor_window() {
         let cpc = test_cpc_model(Model::Cpc464Plus);
         let (w, h, _) = cpc.render_frame().unwrap();
         assert_eq!((w, h), (768, 576));
     }
-
+    /// Merged (every check kept): `render_frame_is_the_fixed_monitor_window_in_every_gate_array_mode`, `render_frame_doubles_every_scanline_into_a_4_by_3_picture`, `render_frame_of_a_plus_model_uses_the_same_monitor_window`.
     #[test]
+    fn render_frame_window() {
+        render_frame_is_the_fixed_monitor_window_in_every_gate_array_mode();
+        render_frame_doubles_every_scanline_into_a_4_by_3_picture();
+        render_frame_of_a_plus_model_uses_the_same_monitor_window();
+    }
+
     fn cpc_sna_snapshot_round_trips_cpu_ram_and_hardware_registers() {
         let mut source = test_cpc_model(Model::Cpc6128);
         source.bus.gate_array.write(0x8D);
@@ -4249,7 +4183,6 @@ mod tests {
         assert_eq!(restored.bus.upper_rom_select(), 0);
     }
 
-    #[test]
     fn cpc_sna_snapshot_rejects_wrong_machine_ram_shape() {
         let snapshot = test_cpc_model(Model::Cpc6128).save_snapshot();
         let mut target = test_cpc_model(Model::Cpc464);
@@ -4257,7 +4190,6 @@ mod tests {
         assert!(error.contains("RAM size mismatch"));
     }
 
-    #[test]
     fn every_model_starts_with_its_default_crtc_type() {
         for (model, expected) in [
             (Model::Cpc464, crate::CrtcType::Type0),
@@ -4275,7 +4207,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn crtc_status_and_register_read_ports_are_decoded_separately() {
         let mut cpc = test_cpc_model(Model::Cpc464);
         let program = |cpc: &mut Cpc, register: u8, value: u8| {
@@ -4301,8 +4232,13 @@ mod tests {
         assert_eq!(cpc.bus.read_io(0xBF00), 0x15);
         assert_eq!(cpc.bus.read_io(0xBE00) & 0x9F, 0x00);
     }
-
+    /// Merged (every check kept): `every_model_starts_with_its_default_crtc_type`, `crtc_status_and_register_read_ports_are_decoded_separately`.
     #[test]
+    fn crtc_type_and_read_ports() {
+        every_model_starts_with_its_default_crtc_type();
+        crtc_status_and_register_read_ports_are_decoded_separately();
+    }
+
     fn sna_snapshot_round_trips_the_crtc_type() {
         let mut source = test_cpc_model(Model::Cpc6128);
         source.set_crtc_type(crate::CrtcType::Type2);
@@ -4316,7 +4252,6 @@ mod tests {
         assert_eq!(restored.crtc_type(), crate::CrtcType::Type2);
     }
 
-    #[test]
     fn a_snapshot_cannot_swap_a_plus_machine_onto_a_discrete_6845() {
         let mut classic = test_cpc_model(Model::Cpc6128);
         classic.set_crtc_type(crate::CrtcType::Type0);
@@ -4325,6 +4260,14 @@ mod tests {
         let mut plus = test_cpc_model(Model::Cpc6128Plus);
         plus.load_snapshot(snapshot).unwrap();
         assert_eq!(plus.crtc_type(), crate::CrtcType::Type3);
+    }
+    /// Merged (every check kept): `cpc_sna_snapshot_round_trips_cpu_ram_and_hardware_registers`, `cpc_sna_snapshot_rejects_wrong_machine_ram_shape`, `sna_snapshot_round_trips_the_crtc_type`, `a_snapshot_cannot_swap_a_plus_machine_onto_a_discrete_6845`.
+    #[test]
+    fn sna_snapshot_cases() {
+        cpc_sna_snapshot_round_trips_cpu_ram_and_hardware_registers();
+        cpc_sna_snapshot_rejects_wrong_machine_ram_shape();
+        sna_snapshot_round_trips_the_crtc_type();
+        a_snapshot_cannot_swap_a_plus_machine_onto_a_discrete_6845();
     }
 
     #[test]

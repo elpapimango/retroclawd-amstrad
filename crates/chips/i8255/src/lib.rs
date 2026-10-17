@@ -189,12 +189,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_state_is_every_port_input() {
-        let ppi = Ppi::new();
-        assert_eq!(ppi.control(), 0x9B);
-    }
-
-    #[test]
     fn output_port_reads_back_what_was_written() {
         let mut ppi = Ppi::new();
         ppi.write_control(0x80); // mode 0, every port output

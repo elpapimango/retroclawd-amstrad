@@ -307,7 +307,6 @@ impl KeyMatrix {
 mod tests {
     use super::*;
 
-    #[test]
     fn pressing_a_key_pulls_its_bit_low_only_on_its_own_line() {
         let mut matrix = KeyMatrix::new();
         matrix.press(CpcKey::A); // line 8, bit 5
@@ -324,7 +323,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn release_clears_the_key() {
         let mut matrix = KeyMatrix::new();
         matrix.press(CpcKey::Space);
@@ -333,7 +331,6 @@ mod tests {
         assert_eq!(matrix.read(line), 0xFF);
     }
 
-    #[test]
     fn enter_and_return_are_distinct_matrix_keys() {
         let mut matrix = KeyMatrix::new();
         matrix.press(CpcKey::Enter);
@@ -363,8 +360,14 @@ mod tests {
             "Return must not pull Enter's bit"
         );
     }
-
+    /// Merged (every check kept): `pressing_a_key_pulls_its_bit_low_only_on_its_own_line`, `release_clears_the_key`, `enter_and_return_are_distinct_matrix_keys`.
     #[test]
+    fn keyboard_matrix_keys() {
+        pressing_a_key_pulls_its_bit_low_only_on_its_own_line();
+        release_clears_the_key();
+        enter_and_return_are_distinct_matrix_keys();
+    }
+
     fn joystick_2_shares_line_6_with_the_typed_keys_without_fighting_over_bits() {
         let mut matrix = KeyMatrix::new();
         matrix.press(CpcKey::Joy2Up); // line 6, bit 0 -- the same wire as `6`
@@ -384,7 +387,6 @@ mod tests {
         assert_eq!(matrix.read(6), 0xFF);
     }
 
-    #[test]
     fn joystick_2_bits_follow_up_down_left_right_fire1_fire2_fire3() {
         for (key, bit) in [
             (CpcKey::Joy2Up, 0),
@@ -402,6 +404,12 @@ mod tests {
                 assert_eq!(matrix.read(other), 0xFF, "{key:?} leaked to line {other}");
             }
         }
+    }
+    /// Merged (every check kept): `joystick_2_shares_line_6_with_the_typed_keys_without_fighting_over_bits`, `joystick_2_bits_follow_up_down_left_right_fire1_fire2_fire3`.
+    #[test]
+    fn joystick_2_bits() {
+        joystick_2_shares_line_6_with_the_typed_keys_without_fighting_over_bits();
+        joystick_2_bits_follow_up_down_left_right_fire1_fire2_fire3();
     }
 
     #[test]

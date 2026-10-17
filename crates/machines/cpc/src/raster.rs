@@ -681,7 +681,6 @@ mod tests {
         assert_eq!(WINDOW_WIDTH * 3, WINDOW_HEIGHT * 2 * 4);
     }
 
-    #[test]
     fn moving_the_hsync_position_moves_the_picture() {
         let mut ram = vec![0u8; 0x10000];
         ram[0xC000] = 0xFF;
@@ -704,7 +703,6 @@ mod tests {
         assert_eq!(rendered.display_origin.unwrap().0, 64 + 32);
     }
 
-    #[test]
     fn ink_changes_apply_from_the_character_they_were_made_on() {
         let mut ram = vec![0u8; 0x10000];
         // Every displayed byte is pen 1 in mode 2.
@@ -738,7 +736,6 @@ mod tests {
         assert!(seen_first && seen_second);
     }
 
-    #[test]
     fn a_mode_request_latches_at_the_next_hsync_end() {
         // Every video byte is 0xB6: mode 0 reads it as pens 13 then 6,
         // mode 1 as pens 1, 2, 3, 2 ... (`decode_mode1`).
@@ -762,8 +759,13 @@ mod tests {
         assert_eq!(pixel(&rendered, x + 3, y + 10), [13 * 16, 0, 0]);
         assert_eq!(pixel(&rendered, x + 4, y + 10), [6 * 16, 0, 0]);
     }
-
+    /// Merged (every check kept): `ink_changes_apply_from_the_character_they_were_made_on`, `a_mode_request_latches_at_the_next_hsync_end`.
     #[test]
+    fn mid_line_changes() {
+        ink_changes_apply_from_the_character_they_were_made_on();
+        a_mode_request_latches_at_the_next_hsync_end();
+    }
+
     fn hsync_and_vsync_blank_the_picture() {
         let mut crtc = firmware_crtc();
         // Push HSYNC into the window: R2=56 puts it at window characters
@@ -785,6 +787,12 @@ mod tests {
         assert_eq!(pixel(&rendered, 0, 100), BLACK);
         assert_eq!(pixel(&rendered, 16, 100), [9, 9, 9]);
     }
+    /// Merged (every check kept): `hsync_and_vsync_blank_the_picture`, `moving_the_hsync_position_moves_the_picture`.
+    #[test]
+    fn hsync_effects() {
+        hsync_and_vsync_blank_the_picture();
+        moving_the_hsync_position_moves_the_picture();
+    }
 
     /// The firmware layout but with `R5 = 4` (a 316-line field), as Arkanoid's
     /// title screen uses.
@@ -795,7 +803,6 @@ mod tests {
         crtc
     }
 
-    #[test]
     fn a_field_longer_than_312_lines_with_vsync_is_not_split() {
         let mut ram = vec![0u8; 0x10000];
         ram[0xC000] = 0xFF;
@@ -819,7 +826,6 @@ mod tests {
         assert!(after > before);
     }
 
-    #[test]
     fn a_long_field_renders_a_picture_every_time_it_is_sampled() {
         let mut ram = vec![0u8; 0x10000];
         ram[0xC000] = 0xFF;
@@ -842,8 +848,13 @@ mod tests {
             );
         }
     }
-
+    /// Merged (every check kept): `a_field_longer_than_312_lines_with_vsync_is_not_split`, `a_long_field_renders_a_picture_every_time_it_is_sampled`.
     #[test]
+    fn long_fields() {
+        a_field_longer_than_312_lines_with_vsync_is_not_split();
+        a_long_field_renders_a_picture_every_time_it_is_sampled();
+    }
+
     fn a_synced_screen_that_loses_vsync_falls_back_to_free_running() {
         let mut crtc = firmware_crtc();
         let mut builder = FrameBuilder::new(VideoState::new(1, 0, inks(&[], BLACK)));
@@ -865,7 +876,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_frame_without_vsync_still_completes_at_pal_length() {
         let mut crtc = firmware_crtc();
         crtc.select_register(7);
@@ -877,6 +887,12 @@ mod tests {
             builder.last_frame().unwrap().line_count(),
             FREE_RUN_FRAME_LINES
         );
+    }
+    /// Merged (every check kept): `a_synced_screen_that_loses_vsync_falls_back_to_free_running`, `a_frame_without_vsync_still_completes_at_pal_length`.
+    #[test]
+    fn missing_vsync() {
+        a_synced_screen_that_loses_vsync_falls_back_to_free_running();
+        a_frame_without_vsync_still_completes_at_pal_length();
     }
 
     #[test]
