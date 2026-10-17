@@ -17,6 +17,14 @@ The Amstrad CPC machine family of retroclawd, split out of the main repository (
 
 The notes below were written in the host repository before the split and refer to it in places (`retroclawd`'s GUI, `HostedMachine`, `emu_thread`, the CLI flags): those parts are host code and are documented in the host's CLAUDE.md.
 
+- **Second drive (2026-10-16)**: `nec765::Fdc` addresses two units (`DRIVES`, `insert_disk_in(unit, ..)`, per-unit head position in
+  `FdcState`; units 2 and 3 and an empty unit are not ready; Sense Interrupt Status keeps the unit bits in ST0; the old `insert_disk`/`disk()`
+  mean drive A). `CpcBus` keeps `pristine_disks[2]`; `Cpc::load_disk_in(drive, ..)`, `eject_disk_from`, `disk_in`, `take_modified_disk_image_of`,
+  `mark_disk_saved_in`; the save state carries drive B's modified image (`modified_disk_b`). The plugin handles `MediaSlot::Disk { drive }`
+  (0 and 1) for attach, detach, `ExportDisk` and `MarkDiskSaved`, and reports two `DiskStatus` entries. The one motor line spins both drives
+  (as on the real interface). Tests: controller (independent units, per-drive cylinders, not-ready cases), `Cpc` (reads from A and B,
+  independent modified tracking), plugin (drive 1 attach/export/detach, drive 2 refused), and in the host suite the real 6128 firmware reading
+  `B:SAME.BIN` through AMSDOS.
 - **CPC keyboard: punctuation, function keys and typing (2026-10-16)**: the matrix is now complete and read from the firmware's
   own key translation tables (normal at ROM `0x1D69`, shifted at `0x1DB9`, ten lines of eight bits), which the plugin tests compare
   against (`every_character_a_key_claims_is_what_the_firmware_makes_of_its_matrix_position`, ROM-gated): the keys `Caret`, `Minus`, `At`,

@@ -37,6 +37,8 @@ struct SaveState {
     /// written to it -- a disk nobody wrote to is exactly the externally
     /// supplied image, so it stays external like ROM/tape bytes.
     modified_disk: Option<Vec<u8>>,
+    /// The same for drive B.
+    modified_disk_b: Option<Vec<u8>>,
     /// CPC Plus/GX4000 ASIC state -- `None` for every classic model. The
     /// cartridge image itself stays external, same `--rom` convention as
     /// every other machine here.
@@ -65,6 +67,7 @@ pub(crate) fn encode(cpc: &Cpc) -> Vec<u8> {
         tape_position: cpc.bus.tape_position(),
         fdc: cpc.bus.fdc_state(),
         modified_disk: cpc.bus.modified_disk_image(),
+        modified_disk_b: cpc.bus.modified_disk_image_of(1),
         asic: cpc.bus.asic_state(),
     };
     bincode::serde::encode_to_vec(&state, bincode::config::standard())
@@ -109,6 +112,7 @@ pub(crate) fn decode(cpc: &mut Cpc, bytes: &[u8]) -> Result<(), String> {
     cpc.bus.set_disk_motor(state.disk_motor);
     cpc.bus.set_tape_motor_mode(state.tape_motor_mode);
     cpc.bus.restore_disk_image(state.modified_disk)?;
+    cpc.bus.restore_disk_image_of(1, state.modified_disk_b)?;
     cpc.bus.restore_fdc_state(state.fdc);
     cpc.bus.set_cassette_motor(state.cassette_motor);
     cpc.bus.restore_tape_position(state.tape_position);

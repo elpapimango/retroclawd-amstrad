@@ -200,7 +200,7 @@ pub struct CpcBus {
     fdc: Option<nec765::Fdc<dsk::Disk>>,
     /// The disk exactly as it was inserted, so a save state that predates
     /// any write can put the medium back (see `restore_disk_image`).
-    pristine_disk: Option<dsk::Disk>,
+    pristine_disks: [Option<dsk::Disk>; nec765::DRIVES],
     disk_motor: bool,
     /// Loaded cassette tape (`.cdt`/`.tzx`) if any.
     tape: Option<zx_tape::TapePlayer>,
@@ -328,7 +328,7 @@ impl CpcBus {
                 fdc.enable_seek_timing();
                 fdc
             }),
-            pristine_disk: None,
+            pristine_disks: [None, None],
             disk_motor: false,
             tape: None,
             cassette_motor: false,
@@ -1049,39 +1049,68 @@ impl CpcBus {
         }
     }
 
-    fn load_disk(&mut self, disk: dsk::Disk) {
-        if let Some(fdc) = &mut self.fdc {
-            self.pristine_disk = Some(disk.clone());
-            fdc.insert_disk(disk);
+    /// Puts `disk` in `drive` (0 = A, 1 = B), keeping a pristine copy of what went in.
+    fn load_disk_in(&mut self, drive: usize, disk: dsk::Disk) {
+        if drive < nec765::DRIVES
+            && let Some(fdc) = &mut self.fdc
+        {
+            self.pristine_disks[drive] = Some(disk.clone());
+            fdc.insert_disk_in(drive, disk);
         }
     }
 
-    /// Takes the disk out of the drive (a no-op with none inserted). The
-    /// pristine copy goes too: it belongs to the disk that left.
+    /// Takes the disk out of drive A (a no-op with none inserted).
     fn eject_disk(&mut self) {
+        self.eject_disk_from(0);
+    }
+
+    /// Takes the disk out of `drive`. The pristine copy goes too: it belongs to the disk that left.
+    fn eject_disk_from(&mut self, drive: usize) {
         if let Some(fdc) = &mut self.fdc {
-            fdc.eject_disk();
+            fdc.eject_disk_from(drive);
         }
-        self.pristine_disk = None;
+        if let Some(pristine) = self.pristine_disks.get_mut(drive) {
+            *pristine = None;
+        }
     }
 
-    /// The disk in the drive with every write applied.
+    /// The disk in drive A with every write applied.
     pub(crate) fn disk(&self) -> Option<&dsk::Disk> {
-        self.fdc.as_ref()?.disk()
+        self.disk_in(0)
     }
 
-    /// The modified disk serialised for a save state; `None` while the
+    /// The disk in `drive` with every write applied.
+    pub(crate) fn disk_in(&self, drive: usize) -> Option<&dsk::Disk> {
+        self.fdc.as_ref()?.disk_in(drive)
+    }
+
+    /// The modified disk of drive A serialised for a save state; `None` while the
     /// disk is untouched (then the externally supplied image is exact).
     pub(crate) fn modified_disk_image(&self) -> Option<Vec<u8>> {
-        self.disk()
+        self.modified_disk_image_of(0)
+    }
+
+    pub(crate) fn modified_disk_image_of(&self, drive: usize) -> Option<Vec<u8>> {
+        self.disk_in(drive)
             .filter(|d| d.is_modified())
             .map(dsk::Disk::to_bytes)
     }
 
-    /// Puts the drive's medium back to what a save state recorded: the
+    /// Puts drive A's medium back to what a save state recorded: the
     /// captured modified image, or (for a state taken before any write)
     /// the disk as originally inserted.
     pub(crate) fn restore_disk_image(&mut self, image: Option<Vec<u8>>) -> Result<(), String> {
+        self.restore_disk_image_of(0, image)
+    }
+
+    pub(crate) fn restore_disk_image_of(
+        &mut self,
+        drive: usize,
+        image: Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        if drive >= nec765::DRIVES {
+            return Ok(());
+        }
         let Some(fdc) = &mut self.fdc else {
             return Ok(());
         };
@@ -1090,22 +1119,26 @@ impl CpcBus {
                 let mut disk = dsk::parse(&bytes)
                     .map_err(|e| format!("save state disk image is invalid: {e}"))?;
                 disk.mark_modified();
-                fdc.insert_disk(disk);
+                fdc.insert_disk_in(drive, disk);
             }
             None => {
-                if fdc.disk().is_some_and(dsk::Disk::is_modified)
-                    && let Some(pristine) = self.pristine_disk.clone()
+                if fdc.disk_in(drive).is_some_and(dsk::Disk::is_modified)
+                    && let Some(pristine) = self.pristine_disks[drive].clone()
                 {
-                    fdc.insert_disk(pristine);
+                    fdc.insert_disk_in(drive, pristine);
                 }
             }
         }
         Ok(())
     }
 
-    /// Records that the current disk image has been persisted.
+    /// Records that drive A's current disk image has been persisted.
     pub(crate) fn mark_disk_saved(&mut self) {
-        if let Some(disk) = self.fdc.as_mut().and_then(nec765::Fdc::disk_mut) {
+        self.mark_disk_saved_in(0);
+    }
+
+    pub(crate) fn mark_disk_saved_in(&mut self, drive: usize) {
+        if let Some(disk) = self.fdc.as_mut().and_then(|fdc| fdc.disk_in_mut(drive)) {
             disk.clear_modified();
         }
     }
@@ -1766,17 +1799,30 @@ impl Cpc {
     }
 
     pub fn load_disk(&mut self, disk: dsk::Disk) -> Result<(), String> {
+        self.load_disk_in(0, disk)
+    }
+
+    /// Puts `disk` in drive `drive` (0 = A, 1 = B, the external drive of a CPC664/6128).
+    pub fn load_disk_in(&mut self, drive: usize, disk: dsk::Disk) -> Result<(), String> {
         if !self.model().has_fdc() {
             return Err("floppy disks require CPC664 or CPC6128".to_string());
         }
-        self.bus.load_disk(disk);
+        if drive >= nec765::DRIVES {
+            return Err(format!("drive {drive} does not exist (drives 0 and 1)"));
+        }
+        self.bus.load_disk_in(drive, disk);
         Ok(())
     }
 
-    /// Takes the disk out of the drive. Unsaved writes are lost with it --
+    /// Takes the disk out of drive A. Unsaved writes are lost with it --
     /// export them first (`take_modified_disk_image`) if they matter.
     pub fn eject_disk(&mut self) {
         self.bus.eject_disk();
+    }
+
+    /// Takes the disk out of `drive` (0 or 1).
+    pub fn eject_disk_from(&mut self, drive: usize) {
+        self.bus.eject_disk_from(drive);
     }
 
     /// Takes the cassette out of the deck.
@@ -1790,6 +1836,11 @@ impl Cpc {
         self.bus.disk()
     }
 
+    /// The disk currently in `drive` (0 or 1).
+    pub fn disk_in(&self, drive: usize) -> Option<&dsk::Disk> {
+        self.bus.disk_in(drive)
+    }
+
     /// The disk image as a `.dsk` file if it has been modified since it
     /// was inserted or last marked saved; `None` when there's nothing to
     /// persist.
@@ -1797,10 +1848,20 @@ impl Cpc {
         self.bus.modified_disk_image()
     }
 
+    /// `take_modified_disk_image` for `drive` (0 or 1).
+    pub fn take_modified_disk_image_of(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.modified_disk_image_of(drive)
+    }
+
     /// Call after writing `take_modified_disk_image`'s bytes out, so the
     /// same changes aren't reported as unsaved again.
     pub fn mark_disk_saved(&mut self) {
         self.bus.mark_disk_saved();
+    }
+
+    /// `mark_disk_saved` for `drive` (0 or 1).
+    pub fn mark_disk_saved_in(&mut self, drive: usize) {
+        self.bus.mark_disk_saved_in(drive);
     }
 
     /// Everything the program wrote to the cassette output line while the
@@ -2687,6 +2748,65 @@ mod tests {
             0x11,
             "third real read wraps back to copy 0"
         );
+    }
+
+    /// Reads the first byte of sector 1 of cylinder 0 through the CPC's FDC ports from `unit` (0 = A, 1 = B).
+    fn read_first_byte_from(cpc: &mut Cpc, unit: u8) -> (u8, u8) {
+        for byte in [0x46, unit, 0x00, 0x00, 0x01, 0x02, 0x01, 0x2A, 0xFF] {
+            cpc.bus.write_io(0xFB7F, byte);
+        }
+        let first_byte = cpc.bus.read_io(0xFB7F);
+        for _ in 1..512 {
+            cpc.bus.read_io(0xFB7F);
+        }
+        let st0 = cpc.bus.read_io(0xFB7F);
+        for _ in 0..6 {
+            cpc.bus.read_io(0xFB7F);
+        }
+        (first_byte, st0)
+    }
+
+    #[test]
+    fn a_6128_reads_drive_a_and_the_external_drive_b_through_the_same_controller() {
+        let mut cpc = test_cpc_model(Model::Cpc6128);
+        cpc.load_disk(one_sector_dsk(0x5A)).unwrap();
+        cpc.load_disk_in(1, one_sector_dsk(0xC3)).unwrap();
+        cpc.bus.write_io(0xFA7E, 1); // the one motor line spins both drives
+        assert_eq!(read_first_byte_from(&mut cpc, 0).0, 0x5A, "drive A");
+        let (b, st0) = read_first_byte_from(&mut cpc, 1);
+        assert_eq!(b, 0xC3, "drive B");
+        assert_eq!(st0 & 0x03, 1, "ST0 names unit 1");
+        assert_eq!(read_first_byte_from(&mut cpc, 0).0, 0x5A, "and back to A");
+        // No drive C, and ejecting B leaves A alone.
+        assert!(cpc.load_disk_in(2, one_sector_dsk(0)).is_err());
+        cpc.eject_disk_from(1);
+        assert!(cpc.disk_in(1).is_none() && cpc.disk().is_some());
+    }
+
+    #[test]
+    fn the_drives_are_modified_and_saved_independently() {
+        let mut cpc = test_cpc_model(Model::Cpc6128);
+        cpc.load_disk(one_sector_dsk(0x5A)).unwrap();
+        cpc.load_disk_in(1, one_sector_dsk(0xC3)).unwrap();
+        assert!(cpc.take_modified_disk_image_of(1).is_none());
+        // Write a sector to drive B only (Write Data, unit 1).
+        cpc.bus.write_io(0xFA7E, 1);
+        for byte in [0x45, 0x01, 0x00, 0x00, 0x01, 0x02, 0x01, 0x2A, 0xFF] {
+            cpc.bus.write_io(0xFB7F, byte);
+        }
+        for _ in 0..512 {
+            cpc.bus.write_io(0xFB7F, 0x99);
+        }
+        for _ in 0..7 {
+            cpc.bus.read_io(0xFB7F);
+        }
+        assert!(
+            cpc.take_modified_disk_image_of(1).is_some(),
+            "drive B was written"
+        );
+        assert!(cpc.take_modified_disk_image().is_none(), "drive A was not");
+        cpc.mark_disk_saved_in(1);
+        assert!(cpc.take_modified_disk_image_of(1).is_none());
     }
 
     /// Real regression: `retroclawd`'s GUI startup path calls

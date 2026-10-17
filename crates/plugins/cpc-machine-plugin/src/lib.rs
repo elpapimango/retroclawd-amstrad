@@ -192,8 +192,9 @@ struct InstanceRecord {
     region: String,
     paused: bool,
     breakpoints: Vec<u16>,
-    disk_attached: bool,
-    disk_image_id: Option<String>,
+    /// Drive A and drive B.
+    disk_attached: [bool; 2],
+    disk_image_id: [Option<String>; 2],
 }
 
 impl PluginState {
@@ -666,8 +667,8 @@ fn create_machine(req: MachineCreateRequest) -> Result<MachineCreateResponse, St
             region: region_name(region).to_string(),
             paused: false,
             breakpoints: Vec::new(),
-            disk_attached: false,
-            disk_image_id: None,
+            disk_attached: [false; 2],
+            disk_image_id: [None, None],
         },
     );
 
@@ -703,6 +704,7 @@ fn media_extension(kind: MediaKind, name: Option<&str>) -> String {
 }
 
 fn attach_media(
+    slot: plugin_api::MediaSlot,
     record: &mut InstanceRecord,
     kind: MediaKind,
     name: Option<String>,
@@ -752,9 +754,13 @@ fn attach_media(
                     ));
                 }
             };
-            record.machine.load_disk(disk)?;
-            record.disk_attached = true;
-            record.disk_image_id = name;
+            let drive = match slot {
+                plugin_api::MediaSlot::Disk { drive } => usize::from(drive),
+                _ => 0,
+            };
+            record.machine.load_disk_in(drive, disk)?;
+            record.disk_attached[drive] = true;
+            record.disk_image_id[drive] = name;
             Ok(())
         }
         MediaKind::Cartridge => {
@@ -784,6 +790,15 @@ fn attach_media(
     }
 }
 
+/// A drive number from the host: the CPC664/6128 have the internal drive A (0) and an external drive B (1).
+fn disk_drive(drive: u8) -> Result<usize, String> {
+    if drive < 2 {
+        Ok(usize::from(drive))
+    } else {
+        Err(format!("drive {drive} does not exist (drives 0 and 1)"))
+    }
+}
+
 fn media_snapshot(record: &InstanceRecord) -> MediaSnapshot {
     let playback = record.machine.tape_playback_state();
     let tape = Some(TapeStatus {
@@ -800,15 +815,17 @@ fn media_snapshot(record: &InstanceRecord) -> MediaSnapshot {
     });
 
     let disks = if record.kind.has_fdc() {
-        vec![DiskStatus {
-            attached: record.disk_attached,
-            image_id: record.disk_image_id.clone(),
-            drive: Some(0),
-            head: None,
-            track: None,
-            sector: None,
-            controller_phase: None,
-        }]
+        (0..2)
+            .map(|drive| DiskStatus {
+                attached: record.disk_attached[drive],
+                image_id: record.disk_image_id[drive].clone(),
+                drive: Some(drive as u8),
+                head: None,
+                track: None,
+                sector: None,
+                controller_phase: None,
+            })
+            .collect()
     } else {
         Vec::new()
     };
@@ -1319,13 +1336,13 @@ fn handle_machine_command(
             Ok(MachineResponse::Ack)
         }
         MachineCommand::AttachMedia {
-            slot: _,
+            slot,
             kind,
             name,
             bytes,
             options,
         } => {
-            attach_media(record, kind, name, bytes, options)?;
+            attach_media(slot, record, kind, name, bytes, options)?;
             Ok(MachineResponse::Ack)
         }
         MachineCommand::DetachMedia { slot } => match slot {
@@ -1333,38 +1350,31 @@ fn handle_machine_command(
                 record.machine.eject_tape();
                 Ok(MachineResponse::Ack)
             }
-            plugin_api::MediaSlot::Disk { drive: 0 } => {
-                record.machine.eject_disk();
-                record.disk_attached = false;
-                record.disk_image_id = None;
+            plugin_api::MediaSlot::Disk { drive } => {
+                let drive = disk_drive(drive)?;
+                record.machine.eject_disk_from(drive);
+                record.disk_attached[drive] = false;
+                record.disk_image_id[drive] = None;
                 Ok(MachineResponse::Ack)
             }
-            plugin_api::MediaSlot::Disk { drive } => {
-                Err(format!("drive {drive} does not exist (only drive 0)"))
-            }
             other => Err(format!(
-                "nothing to eject from slot {other:?} on the cpc plugin (tape or disk drive 0)"
+                "nothing to eject from slot {other:?} on the cpc plugin (tape or a disk drive)"
             )),
         },
         MachineCommand::ExportDisk {
             drive,
             only_if_modified,
         } => {
-            if drive != 0 {
-                return Err(format!("drive {drive} does not exist (only drive 0)"));
-            }
+            let drive = disk_drive(drive)?;
             let image = if only_if_modified {
-                record.machine.take_modified_disk_image()
+                record.machine.take_modified_disk_image_of(drive)
             } else {
-                record.machine.disk().map(dsk::Disk::to_bytes)
+                record.machine.disk_in(drive).map(dsk::Disk::to_bytes)
             };
             Ok(MachineResponse::DiskImage(image))
         }
         MachineCommand::MarkDiskSaved { drive } => {
-            if drive != 0 {
-                return Err(format!("drive {drive} does not exist (only drive 0)"));
-            }
-            record.machine.mark_disk_saved();
+            record.machine.mark_disk_saved_in(disk_drive(drive)?);
             Ok(MachineResponse::Ack)
         }
         MachineCommand::Freeze
@@ -2434,7 +2444,14 @@ mod tests {
 
         let mut state = state().lock().unwrap();
         let record = state.instances.get_mut(&create.instance).unwrap();
-        let result = attach_media(record, MediaKind::Tape, None, Vec::new(), Vec::new());
+        let result = attach_media(
+            plugin_api::MediaSlot::Tape,
+            record,
+            MediaKind::Tape,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
         drop(state);
         assert!(result.is_err());
 
@@ -2574,14 +2591,14 @@ mod tests {
             detach(&mut record, plugin_api::MediaSlot::Disk { drive: 0 }),
             Ok(MachineResponse::Ack)
         ));
-        assert!(!record.disk_attached);
+        assert!(!record.disk_attached[0]);
         assert!(matches!(
             handle_machine_command(&mut record, export()),
             Ok(MachineResponse::DiskImage(None))
         ));
         // A swap is detach + attach: the new disk is in the drive.
         handle_machine_command(&mut record, attach_disk).unwrap();
-        assert!(record.disk_attached);
+        assert!(record.disk_attached[0]);
 
         // The cassette: eject works with or without a tape in the deck.
         assert!(matches!(
@@ -2589,8 +2606,59 @@ mod tests {
             Ok(MachineResponse::Ack)
         ));
         assert!(!record.machine.has_tape());
-        // Anything else is a clear refusal.
-        assert!(detach(&mut record, plugin_api::MediaSlot::Disk { drive: 1 }).is_err());
+
+        // Drive B (the external drive) is a second, independent slot.
+        let attach_b = MachineCommand::AttachMedia {
+            slot: plugin_api::MediaSlot::Disk { drive: 1 },
+            kind: MediaKind::Disk,
+            name: Some("b.dsk".to_string()),
+            bytes: dsk::Disk::new(1).to_bytes(),
+            options: Vec::new(),
+        };
+        let export_b = || MachineCommand::ExportDisk {
+            drive: 1,
+            only_if_modified: false,
+        };
+        assert!(matches!(
+            handle_machine_command(&mut record, export_b()),
+            Ok(MachineResponse::DiskImage(None))
+        ));
+        handle_machine_command(&mut record, attach_b).unwrap();
+        assert!(record.disk_attached[1] && record.disk_attached[0]);
+        assert_eq!(record.disk_image_id[1].as_deref(), Some("b.dsk"));
+        assert_eq!(record.disk_image_id[0].as_deref(), Some("blank.dsk"));
+        assert!(matches!(
+            handle_machine_command(&mut record, export_b()),
+            Ok(MachineResponse::DiskImage(Some(_)))
+        ));
+        let snapshot = media_snapshot(&record);
+        assert_eq!(snapshot.disks.len(), 2);
+        assert!(snapshot.disks.iter().all(|d| d.attached));
+        assert!(matches!(
+            detach(&mut record, plugin_api::MediaSlot::Disk { drive: 1 }),
+            Ok(MachineResponse::Ack)
+        ));
+        assert!(
+            !record.disk_attached[1] && record.disk_attached[0],
+            "A stays"
+        );
+        assert!(matches!(
+            handle_machine_command(&mut record, MachineCommand::MarkDiskSaved { drive: 1 }),
+            Ok(MachineResponse::Ack)
+        ));
+
+        // Anything else is a clear refusal: no third drive, no cartridge.
+        assert!(detach(&mut record, plugin_api::MediaSlot::Disk { drive: 2 }).is_err());
+        assert!(
+            handle_machine_command(
+                &mut record,
+                MachineCommand::ExportDisk {
+                    drive: 2,
+                    only_if_modified: false
+                }
+            )
+            .is_err()
+        );
         assert!(detach(&mut record, plugin_api::MediaSlot::Cartridge { slot: 0 }).is_err());
     }
 
