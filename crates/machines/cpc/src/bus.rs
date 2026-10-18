@@ -922,6 +922,19 @@ impl CpcBus {
         }
     }
 
+    /// The 8255 and the two latches that depend on what the firmware wrote to it: port C's keyboard row and the PSG's selected
+    /// register. A save state that left them out resumed with the PPI in its power-on mode.
+    pub(crate) fn ppi_state(&self) -> (i8255::Ppi, u8, u8) {
+        (self.ppi.clone(), self.keyboard_row_select, self.psg_selected_register)
+    }
+
+    pub(crate) fn restore_ppi_state(&mut self, ppi: i8255::Ppi, keyboard_row_select: u8, psg_selected_register: u8) {
+        self.ppi = ppi;
+        self.keyboard_row_select = keyboard_row_select;
+        self.psg_selected_register = psg_selected_register;
+        self.ay.select_register(psg_selected_register);
+    }
+
     /// CPC Plus/GX4000 ASIC state (all internal register storage, no
     /// externally supplied media -- unlike the cartridge image itself,
     /// which stays external, same `--rom` convention as every other

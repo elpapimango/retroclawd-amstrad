@@ -43,9 +43,15 @@ struct SaveState {
     /// cartridge image itself stays external, same `--rom` convention as
     /// every other machine here.
     asic: Option<crate::asic::Asic>,
+    /// The 8255 (mode, port latches) and what the firmware selected through it: before this was saved a restored machine
+    /// had its PPI back in the power-on mode (found by the CPC acid tests' ROM test, which printed nothing after a restore).
+    ppi: i8255::Ppi,
+    keyboard_row_select: u8,
+    psg_selected_register: u8,
 }
 
 pub(crate) fn encode(cpc: &Cpc) -> Vec<u8> {
+    let (ppi, keyboard_row_select, psg_selected_register) = cpc.bus.ppi_state();
     let state = SaveState {
         cpu: cpc.cpu,
         model: cpc.model(),
@@ -69,6 +75,9 @@ pub(crate) fn encode(cpc: &Cpc) -> Vec<u8> {
         modified_disk: cpc.bus.modified_disk_image(),
         modified_disk_b: cpc.bus.modified_disk_image_of(1),
         asic: cpc.bus.asic_state(),
+        ppi,
+        keyboard_row_select,
+        psg_selected_register,
     };
     bincode::serde::encode_to_vec(&state, bincode::config::standard())
         .expect("CPC save state should always be encodable")
@@ -117,6 +126,8 @@ pub(crate) fn decode(cpc: &mut Cpc, bytes: &[u8]) -> Result<(), String> {
     cpc.bus.set_cassette_motor(state.cassette_motor);
     cpc.bus.restore_tape_position(state.tape_position);
     cpc.bus.restore_asic_state(state.asic);
+    cpc.bus
+        .restore_ppi_state(state.ppi, state.keyboard_row_select, state.psg_selected_register);
     cpc.resync_video();
     Ok(())
 }
@@ -163,11 +174,28 @@ mod tests {
 
         assert!(target.load_state(&source.save_state()).is_err());
     }
-    /// Merged (every check kept): `save_state_round_trips_cpu_and_memory`, `save_state_rejects_a_different_cpc_model`.
+    fn save_state_round_trips_the_ppi_and_the_psg_selection() {
+        let mut cpc = Cpc::new(vec![0; crate::ROM_IMAGE_SIZE_464], crate::Model::Cpc464).unwrap();
+        cpc.bus.write_io(0xF782, 0x82); // mode 0: port A output, port B input, port C output
+        cpc.bus.write_io(0xF400, 0x07); // port A = register 7
+        cpc.bus.write_io(0xF6C0, 0); // port C: PSG select
+        cpc.bus.write_io(0xF600, 0); // port C: PSG inactive, keyboard row 0
+        cpc.bus.write_io(0xF609, 0); // port C = 9: keyboard row 9
+
+        let mut restored =
+            Cpc::new(vec![0; crate::ROM_IMAGE_SIZE_464], crate::Model::Cpc464).unwrap();
+        restored.load_state(&cpc.save_state()).unwrap();
+
+        assert_eq!(restored.bus.ppi_state().1, cpc.bus.ppi_state().1);
+        assert_eq!(restored.bus.ppi_state().2, cpc.bus.ppi_state().2);
+        assert_eq!(restored.save_state(), cpc.save_state());
+    }
+    /// Merged (every check kept): `save_state_round_trips_cpu_and_memory`, `save_state_rejects_a_different_cpc_model`, `save_state_round_trips_the_ppi_and_the_psg_selection`.
     #[test]
     fn save_state_basics() {
         save_state_round_trips_cpu_and_memory();
         save_state_rejects_a_different_cpc_model();
+        save_state_round_trips_the_ppi_and_the_psg_selection();
     }
 
     fn save_state_round_trips_asic_state_for_plus_models() {
