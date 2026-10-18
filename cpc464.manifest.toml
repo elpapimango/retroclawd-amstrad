@@ -30,6 +30,15 @@ golden = "cpc464/S2-mod.png"
 golden_sha256 = "41689bb4a8fc1998e85322cc9592b9fd58f42f0245d0269403818be5826da01d"
 compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.15, 0.95, 0.465], reason = "the cursor (it blinks) is outside the crop; another emulator's rasteriser; the crop is the banner, the typed line and its answer 34" }
 
+# S4: BASIC's SOUND 1,240,1000 plays a 10 s tone on AY channel A (period 240, a 1 MHz AY: 260.4 Hz). ZEsarUX 13.0 recorded
+# 12-16 s: 260.02 Hz; retroclawd 260.40 Hz. Levels differ (0.0126 at the reference, 0.0355 here): a mixer choice, only "clearly audible" is required.
+[[scenario]]
+id = "S4"
+kind = "audio"
+frames = 1000
+args = ["--type-after", "200", "--type-delay", "100", "--type", "sound 1,240,1000\n"]
+audio = { from_s = 12.0, to_s = 16.0, tone_hz = 260.4, tone_tolerance_pct = 1.0, min_amplitude = 0.01 }
+
 [[scenario]]
 id = "S5"
 kind = "state"
