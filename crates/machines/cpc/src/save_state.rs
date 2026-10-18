@@ -126,8 +126,11 @@ pub(crate) fn decode(cpc: &mut Cpc, bytes: &[u8]) -> Result<(), String> {
     cpc.bus.set_cassette_motor(state.cassette_motor);
     cpc.bus.restore_tape_position(state.tape_position);
     cpc.bus.restore_asic_state(state.asic);
-    cpc.bus
-        .restore_ppi_state(state.ppi, state.keyboard_row_select, state.psg_selected_register);
+    cpc.bus.restore_ppi_state(
+        state.ppi,
+        state.keyboard_row_select,
+        state.psg_selected_register,
+    );
     cpc.resync_video();
     Ok(())
 }

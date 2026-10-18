@@ -368,6 +368,10 @@ impl CpcBus {
             video_events: Vec::new(),
             crtc_replay_base: None,
         };
+        // Port C's pins when the 8255 leaves them as inputs: the keyboard-row lines and the cassette
+        // write-data line read high, the motor and the AY's BC1/BDIR lines low (the level the CPC
+        // acid test `ppi` expects of a CPC, `port_c_input = &2F`).
+        bus.ppi.set_input_c(0x2F);
         bus.refresh_cassette_input();
         bus
     }
@@ -406,24 +410,47 @@ impl CpcBus {
         if self.ppi.control() & 0x08 == 0 && motor_on != self.cassette_motor {
             self.set_cassette_motor(motor_on);
         }
-        match (val >> 6) & 0x03 {
+        self.psg_function(self.ppi.port_c_latch());
+    }
+
+    /// What the AY sees on its data bus: Port A's output latch while the 8255 drives the pins, otherwise
+    /// the undriven bus, which floats high (the CPC acid test `ppi`: "mode 0: ppi port a output").
+    fn psg_bus_value(&self) -> u8 {
+        if self.ppi.port_a_pins_driven() {
+            self.ppi.port_a_latch()
+        } else {
+            0xFF
+        }
+    }
+
+    /// The AY operation Port C's BDIR/BC1 lines (7:6) select, performed as the function is entered:
+    /// `11` select register, `10` write data, `01` read data, `00` inactive.
+    fn psg_function(&mut self, port_c: u8) {
+        match (port_c >> 6) & 0x03 {
             0b01 => {
                 // Register 14 is the real keyboard-row read-back
                 // register on CPC -- any other register reads the AY
                 // normally.
-                let v = if self.psg_selected_register == 14 {
-                    self.keyboard_line(self.keyboard_row_select)
+                let v = if self.ay.register_valid() && self.ay.selected_register() == 14 {
+                    // Port A: the keyboard line pulls bits low; an output port shows its latch on the pins
+                    // (wired-AND with the keys), an input port only the keys (the acid test `psg`).
+                    let keys = self.keyboard_line(self.keyboard_row_select);
+                    if self.ay.io_port_output(0) {
+                        self.ay.io_port_latch(0) & keys
+                    } else {
+                        keys
+                    }
                 } else {
                     self.ay.read()
                 };
                 self.ppi.set_input_a(v);
             }
             0b10 => {
-                let v = self.ppi.read_port_a();
+                let v = self.psg_bus_value();
                 self.ay.write(v);
             }
             0b11 => {
-                let v = self.ppi.read_port_a();
+                let v = self.psg_bus_value();
                 self.ay.select_register(v);
                 self.psg_selected_register = v & 0x0F;
             }
@@ -465,7 +492,7 @@ impl CpcBus {
     /// bit (see `CREDITS.md`).
     fn asic_rom_overlay(&self, addr: u16) -> Option<u8> {
         let asic = self.asic.as_ref()?;
-        if self.gate_array.lower_rom_disabled() || !asic.enabled() {
+        if self.gate_array.lower_rom_disabled() || !asic.active() {
             return None;
         }
         let window = addr / ROM_SIZE as u16;
@@ -488,7 +515,7 @@ impl CpcBus {
 
     /// Routes a memory write into the ASIC's own register storage when
     /// the ASIC register window is currently visible at `0x4000-0x7FFF`
-    /// (`asic.enabled() && rmr2 bits 4:3 == 0x18`, gated the same way
+    /// (`asic.active() && rmr2 bits 4:3 == 0x18`, gated the same way
     /// reads are -- see `asic_rom_overlay`'s own doc comment). Returns
     /// whether the write was consumed this way (the caller must not also
     /// write it into system RAM when `true`).
@@ -497,7 +524,7 @@ impl CpcBus {
         let Some(asic) = self.asic.as_mut() else {
             return false;
         };
-        if lower_rom_disabled || !asic.enabled() || (asic.rmr2() & 0x18) != 0x18 {
+        if lower_rom_disabled || !asic.active() || (asic.rmr2() & 0x18) != 0x18 {
             return false;
         }
         match addr {
@@ -591,7 +618,7 @@ impl CpcBus {
     fn asic_pri_active(&self) -> bool {
         self.asic
             .as_ref()
-            .is_some_and(|asic| asic.enabled() && asic.pri() != 0)
+            .is_some_and(|asic| asic.active() && asic.pri() != 0)
     }
 
     /// Compares the real CRTC line/raster counters against the
@@ -608,7 +635,7 @@ impl CpcBus {
         let Some(asic) = asic.as_mut() else {
             return false;
         };
-        if !asic.enabled() || asic.pri() == 0 {
+        if !asic.active() || asic.pri() == 0 {
             return false;
         }
         let pri = asic.pri();
@@ -638,7 +665,7 @@ impl CpcBus {
             ..
         } = self;
         let asic = asic.as_mut()?;
-        if !asic.enabled() {
+        if !asic.active() {
             return None;
         }
         let results = asic.step_dma(&ram[..PRIMARY_RAM_SIZE]);
@@ -925,10 +952,19 @@ impl CpcBus {
     /// The 8255 and the two latches that depend on what the firmware wrote to it: port C's keyboard row and the PSG's selected
     /// register. A save state that left them out resumed with the PPI in its power-on mode.
     pub(crate) fn ppi_state(&self) -> (i8255::Ppi, u8, u8) {
-        (self.ppi.clone(), self.keyboard_row_select, self.psg_selected_register)
+        (
+            self.ppi.clone(),
+            self.keyboard_row_select,
+            self.psg_selected_register,
+        )
     }
 
-    pub(crate) fn restore_ppi_state(&mut self, ppi: i8255::Ppi, keyboard_row_select: u8, psg_selected_register: u8) {
+    pub(crate) fn restore_ppi_state(
+        &mut self,
+        ppi: i8255::Ppi,
+        keyboard_row_select: u8,
+        psg_selected_register: u8,
+    ) {
         self.ppi = ppi;
         self.keyboard_row_select = keyboard_row_select;
         self.psg_selected_register = psg_selected_register;
@@ -1372,6 +1408,10 @@ impl CpcBus {
                     if new_motor_latch { "on" } else { "off" }
                 );
             }
+            if bit >= 6 {
+                // BDIR/BC1 moved by bit set/reset: the AY sees the new function like after a Port C write.
+                self.psg_function(self.ppi.port_c_latch());
+            }
             if bit == 4 {
                 self.tape_control_writes = self.tape_control_writes.saturating_add(1);
                 let motor_on = value != 0;
@@ -1397,6 +1437,11 @@ impl CpcBus {
         // low (parallel/expansion), while bit 0 (VSYNC) and bit 7 (cassette
         // input) come from the live input latch state.
         let mut value = self.ppi.read_port_b();
+        if self.ppi.control() & 0x02 == 0 {
+            // Port B configured as output: the 8255 drives the pins, so a read gives the latch back (the
+            // CPC acid test "port b output latch r/w").
+            return value;
+        }
         value |= CPC_PORT_B_FIXED_HIGH_MASK;
         value &= !CPC_PORT_B_FIXED_LOW_MASK;
         value
@@ -1661,13 +1706,13 @@ impl Bus for CpcBus {
         if port & 0x4000 == 0 {
             match port & 0x0300 {
                 0x0200 => data = self.crtc.read_status(),
-                0x0300 => data = self.crtc.read_register(),
+                0x0300 => data = self.crtc.read_register_clearing(),
                 _ => {}
             }
         }
         if port & 0x0800 == 0 {
             data = match port & 0x0300 {
-                0x0000 => self.ppi.read_port_a(),
+                0x0000 => self.ppi.read_port_a_clearing(),
                 0x0100 => {
                     self.tape_port_reads = self.tape_port_reads.saturating_add(1);
                     self.ppi_port_b_read_value()
@@ -2212,7 +2257,7 @@ impl Cpc {
         } = bus;
         let ram = &ram[..PRIMARY_RAM_SIZE];
         let scroll = match asic {
-            Some(asic) if asic.enabled() => {
+            Some(asic) if asic.active() => {
                 crtc.set_split(asic.split_line(), asic.split_address());
                 asic.v_scroll()
             }
@@ -2330,7 +2375,7 @@ impl Machine for Cpc {
             // draw the current registers as a still picture.
             None => {
                 let (split, scroll) = match &self.bus.asic {
-                    Some(asic) if asic.enabled() => (
+                    Some(asic) if asic.active() => (
                         Some((asic.split_line(), asic.split_address())),
                         asic.v_scroll(),
                     ),
@@ -2353,7 +2398,7 @@ impl Machine for Cpc {
             display_origin,
         } = rendered;
         if let Some(asic) = &self.bus.asic
-            && asic.enabled()
+            && asic.active()
         {
             // Sprite coordinates are relative to the display area; with
             // nothing displayed they sit at the standard layout's origin.

@@ -219,6 +219,9 @@ pub struct Crtc {
     next_row_address: u16,
     /// UM6845R status bit 5 latch (ACCC §21.3.1).
     border_r6_status: bool,
+    /// UM6845R: the light-pen register has been read since power-on (reading R16 or R17 clears the status
+    /// register's bit 6, which is set from power-on -- the CPC acid test `type1ctrl`).
+    lpen_read: bool,
     frame_counter: u32,
     /// Scanlines since the frame started (0 on its first line).
     frame_line: u16,
@@ -247,6 +250,7 @@ impl Default for Crtc {
             row_address: 0,
             next_row_address: 0,
             border_r6_status: false,
+            lpen_read: false,
             frame_counter: 0,
             frame_line: 0,
             split: None,
@@ -329,6 +333,16 @@ impl Crtc {
         }
     }
 
+    /// `read_register` as the CPU port sees it: on a UM6845R reading R16 or R17 clears the status
+    /// register's light-pen bit.
+    pub fn read_register_clearing(&mut self) -> u8 {
+        let value = self.read_register();
+        if self.crtc_type == CrtcType::Type1 && matches!(self.selected_register, 16 | 17) {
+            self.lpen_read = true;
+        }
+        value
+    }
+
     /// Status-register read (CPC port `&BExx`, function 2). Only the
     /// UM6845R has one; types 0 and 2 leave the bus floating high, and the
     /// ASIC types mirror the register-read port (ACCC §21.3).
@@ -337,14 +351,11 @@ impl Crtc {
             // Real type-0 chips "randomly return 255 or 127"; the floating
             // high value is used here.
             CrtcType::Type0 | CrtcType::Type2 => 0xFF,
-            // Bit 6 (light pen strobed) is never set -- no light pen here.
-            // Bit 5: the BORDER-R6 latch.
+            // Bit 6: the light-pen register is "full" from power-on until R16/R17 is read (no light pen
+            // here to strobe it again). Bit 5: the BORDER-R6 latch.
             CrtcType::Type1 => {
-                if self.border_r6_status {
-                    0x20
-                } else {
-                    0x00
-                }
+                (if self.border_r6_status { 0x20 } else { 0x00 })
+                    | (if self.lpen_read { 0x00 } else { 0x40 })
             }
             CrtcType::Type3 | CrtcType::Type4 => self.asic_read(self.selected_register & 7),
         }

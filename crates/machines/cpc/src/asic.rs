@@ -119,6 +119,10 @@ pub(crate) struct DmaResult {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Asic {
     enabled: bool,
+    /// Set when the ASIC has been unlocked at least once: locking it again "doesn't disable any of its
+    /// functionality, it just prevents you changing it" (CPCWiki, "Programming:Unlocking ASIC"), so the
+    /// register window, the interrupt and video features stay as programmed, but RMR2 writes need the unlocked state.
+    unlocked_once: bool,
     seq_ptr: u8,
     prev_seq_byte: u8,
     /// Secondary ROM-mapping register -- only ever written when the Gate
@@ -162,6 +166,7 @@ impl Default for Asic {
     fn default() -> Self {
         Self {
             enabled: false,
+            unlocked_once: false,
             seq_ptr: 0,
             prev_seq_byte: 0,
             rmr2: 0,
@@ -190,6 +195,11 @@ impl Asic {
 
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Whether the ASIC's features are in force: it has been unlocked once (see `unlocked_once`).
+    pub(crate) fn active(&self) -> bool {
+        self.unlocked_once
     }
 
     pub(crate) fn rmr2(&self) -> u8 {
@@ -330,21 +340,28 @@ impl Asic {
         if data == 0 && self.prev_seq_byte != 0 {
             self.seq_ptr = 0;
         }
-        let expected = ASIC_UNLOCK_SEQ.get(self.seq_ptr as usize).copied();
-        if expected == Some(data) {
-            self.seq_ptr += 1;
-            if self.seq_ptr == 14 && self.enabled {
-                self.enabled = false;
+        match self.seq_ptr {
+            // The 14th byte is the STATE: the unlock value continues the sequence, any other value locks the
+            // ASIC at once (the CPC acid test `asiclock`: thirteen right bytes and `&A5` lock it).
+            13 => {
+                if data == ASIC_UNLOCK_SEQ[13] {
+                    self.seq_ptr = 14;
+                } else {
+                    self.enabled = false;
+                    self.seq_ptr = 0;
+                }
             }
-            if self.seq_ptr as usize >= ASIC_UNLOCK_SEQ.len() {
+            // The 15th byte (ACQ, any value) completes an unlock: the ASIC is not unlocked before it.
+            14 => {
                 self.enabled = true;
+                self.unlocked_once = true;
                 self.seq_ptr = 0;
             }
-        } else if self.seq_ptr == 14 {
-            // The final byte's own value is never compared -- any byte
-            // here completes the sequence.
-            self.seq_ptr = 0;
-            self.enabled = true;
+            pointer => {
+                if ASIC_UNLOCK_SEQ.get(pointer as usize) == Some(&data) {
+                    self.seq_ptr += 1;
+                }
+            }
         }
         self.prev_seq_byte = data;
     }
@@ -595,26 +612,30 @@ mod tests {
         assert!(asic.enabled());
     }
 
-    fn sending_only_the_first_14_bytes_locks_while_already_unlocked() {
-        // The 15th byte always re-enables regardless of its own value
-        // (see `check_unlock_sequence`'s own doc comment) -- resending
-        // the *complete* sequence only locks transiently before
-        // immediately re-unlocking. Real locking requires stopping right
-        // after the matching 14th byte.
+    fn a_wrong_state_byte_locks_and_resending_the_whole_sequence_stays_unlocked() {
+        // The 14th byte is the STATE: anything but the unlock value locks the ASIC at once; the full sequence
+        // sent again while unlocked never shows it locked in between.
         let mut asic = Asic::new();
         unlock(&mut asic);
         assert!(asic.enabled());
-        for &byte in &ASIC_UNLOCK_SEQ[..14] {
+        for &byte in &ASIC_UNLOCK_SEQ[..13] {
             asic.check_unlock_sequence(byte);
         }
+        asic.check_unlock_sequence(0xA5);
         assert!(!asic.enabled());
+        assert!(asic.active(), "locked again, but its features stay");
+        unlock(&mut asic);
+        for &byte in &ASIC_UNLOCK_SEQ {
+            asic.check_unlock_sequence(byte);
+            assert!(asic.enabled());
+        }
     }
-    /// Merged (every check kept): `unlock_sequence_enables_asic`, `a_mismatched_byte_after_a_nonzero_byte_resyncs_detection`, `sending_only_the_first_14_bytes_locks_while_already_unlocked`.
+    /// Merged (every check kept): `unlock_sequence_enables_asic`, `a_mismatched_byte_after_a_nonzero_byte_resyncs_detection`, `a_wrong_state_byte_locks_and_resending_the_whole_sequence_stays_unlocked`.
     #[test]
     fn asic_unlock_sequence() {
         unlock_sequence_enables_asic();
         a_mismatched_byte_after_a_nonzero_byte_resyncs_detection();
-        sending_only_the_first_14_bytes_locks_while_already_unlocked();
+        a_wrong_state_byte_locks_and_resending_the_whole_sequence_stays_unlocked();
     }
 
     #[test]
