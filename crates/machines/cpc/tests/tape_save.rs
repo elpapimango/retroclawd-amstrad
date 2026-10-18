@@ -146,12 +146,12 @@ fn booted(rom: &[u8]) -> Cpc {
 /// Runs `program` for at most `max_cycles` and returns its status byte (`0` =
 /// never finished, `0xFF` = every firmware call succeeded).
 fn run_program_status(cpc: &mut Cpc, program: &[u8], max_cycles: u64) -> u8 {
-    cpc.load(FILENAME, b"TEST");
-    cpc.load(PROGRAM, program);
-    cpc.load(STATUS, &[0]);
-    cpc.set_pc(PROGRAM);
-    run_until(cpc, max_cycles, |c| c.read_memory(STATUS) != 0);
-    cpc.read_memory(STATUS)
+    cpc.load(FILENAME.into(), b"TEST");
+    cpc.load(PROGRAM.into(), program);
+    cpc.load(STATUS.into(), &[0]);
+    cpc.set_pc(PROGRAM.into());
+    run_until(cpc, max_cycles, |c| c.read_memory(STATUS.into()) != 0);
+    cpc.read_memory(STATUS.into())
 }
 
 fn run_program(cpc: &mut Cpc, program: &[u8], max_cycles: u64) {
@@ -174,7 +174,7 @@ fn real_firmware_save_is_recorded_and_loads_back_from_the_written_cdt() {
     let mut saver = booted(&rom);
     assert_eq!(saver.recorded_pulse_count(), 0, "booting records nothing");
     let source: Vec<u8> = (0..LEN as usize).map(pattern).collect();
-    saver.load(SOURCE, &source);
+    saver.load(SOURCE.into(), &source);
     run_program(&mut saver, &save_program(), 400_000_000);
 
     let tape = saver
@@ -193,7 +193,9 @@ fn real_firmware_save_is_recorded_and_loads_back_from_the_written_cdt() {
     loader.load_tape(zx_tape::parse_tzx(&cdt).expect("the written .cdt parses"));
     run_program(&mut loader, &load_program(), 400_000_000);
 
-    let loaded: Vec<u8> = (0..LEN).map(|i| loader.read_memory(LOADED + i)).collect();
+    let loaded: Vec<u8> = (0..LEN)
+        .map(|i| loader.read_memory((LOADED + i).into()))
+        .collect();
     assert_eq!(
         loaded, source,
         "bytes loaded back from the recorded tape differ from what was saved"
@@ -205,7 +207,7 @@ fn real_firmware_save_is_recorded_and_loads_back_from_the_written_cdt() {
     voc_loader.load_tape(zx_tape::parse_voc(&voc).expect("the written .voc parses"));
     run_program(&mut voc_loader, &load_program(), 400_000_000);
     let from_voc: Vec<u8> = (0..LEN)
-        .map(|i| voc_loader.read_memory(LOADED + i))
+        .map(|i| voc_loader.read_memory((LOADED + i).into()))
         .collect();
     assert_eq!(
         from_voc, source,
@@ -279,7 +281,7 @@ fn a_cdt_that_starts_on_a_short_pilot_needs_the_leading_silence_to_load() {
     };
     let mut saver = booted(&rom);
     let source: Vec<u8> = (0..LEN as usize).map(pattern).collect();
-    saver.load(SOURCE, &source);
+    saver.load(SOURCE.into(), &source);
     run_program(&mut saver, &save_program(), 400_000_000);
     let cdt = zx_tape::write_tzx(&saver.recorded_tape().expect("recorded SAVE"));
     let tape = zx_tape::parse_tzx(&pilot_first_cdt(&cdt, 2200)).expect("parses");
@@ -288,7 +290,9 @@ fn a_cdt_that_starts_on_a_short_pilot_needs_the_leading_silence_to_load() {
     without.set_tape_leader_ms(0);
     without.load_tape(tape.clone());
     let status = run_program_status(&mut without, &load_program(), 250_000_000);
-    let got: Vec<u8> = (0..LEN).map(|i| without.read_memory(LOADED + i)).collect();
+    let got: Vec<u8> = (0..LEN)
+        .map(|i| without.read_memory((LOADED + i).into()))
+        .collect();
     assert!(
         status != 0xFF && got != source,
         "without a leader the first block is missed (status {status:#04X})"
@@ -298,6 +302,8 @@ fn a_cdt_that_starts_on_a_short_pilot_needs_the_leading_silence_to_load() {
     assert_eq!(with.tape_leader_ms(), cpc::DEFAULT_TAPE_LEADER_MS);
     with.load_tape(tape);
     run_program(&mut with, &load_program(), 400_000_000);
-    let got: Vec<u8> = (0..LEN).map(|i| with.read_memory(LOADED + i)).collect();
+    let got: Vec<u8> = (0..LEN)
+        .map(|i| with.read_memory((LOADED + i).into()))
+        .collect();
     assert_eq!(got, source, "with the default leader the file loads");
 }

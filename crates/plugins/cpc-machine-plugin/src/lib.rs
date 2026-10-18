@@ -170,6 +170,7 @@ static MACHINE_VTABLE_V1: MachinePluginVTableV1 = MachinePluginVTableV1 {
     step: plugin_step_v1,
     halted: plugin_halted_v1,
     pc: plugin_pc_v1,
+    pc_wide: plugin_pc_wide_v1,
 };
 
 static PLUGIN_DESCRIPTOR_V1: StaticPluginDescriptor = StaticPluginDescriptor(PluginDescriptorV1 {
@@ -191,7 +192,7 @@ struct InstanceRecord {
     kind: CpcKind,
     region: String,
     paused: bool,
-    breakpoints: Vec<u16>,
+    breakpoints: Vec<u64>,
     /// Drive A and drive B.
     disk_attached: [bool; 2],
     disk_image_id: [Option<String>; 2],
@@ -313,6 +314,8 @@ fn machine_profile(kind: CpcKind) -> MachineProfile {
         media_kinds,
         options: cpc_options(kind),
         key_names: key_names(),
+        cpus: Vec::new(),
+        axis_names: Vec::new(),
     }
 }
 
@@ -506,7 +509,7 @@ fn read_memory_in_space(
 ) -> Result<Vec<u8>, String> {
     let Some(space) = space else {
         return Ok((0..len)
-            .map(|offset| machine.read_memory(address.wrapping_add(offset)))
+            .map(|offset| machine.read_memory(address.wrapping_add(offset).into()))
             .collect());
     };
     let block = ram_block_from_space(space)?;
@@ -525,7 +528,7 @@ fn write_memory_in_space(
     space: Option<&str>,
 ) -> Result<usize, String> {
     let Some(space) = space else {
-        return Ok(machine.load(address, bytes));
+        return Ok(machine.load(address.into(), bytes));
     };
     let block = ram_block_from_space(space)?;
     let written = machine.write_ram_block(block, address, bytes);
@@ -681,6 +684,7 @@ fn create_machine(req: MachineCreateRequest) -> Result<MachineCreateResponse, St
             notes: vec!["external machine plugin v1".to_string()],
             bitmap_palette: bitmap_palette(),
             bitmap_defaults: Some(bitmap_defaults()),
+            ..MachineMetadata::default()
         },
     })
 }
@@ -780,7 +784,7 @@ fn attach_media(
             let org = option_u32(&options, "org")?.unwrap_or(0x4000);
             let org = u16::try_from(org)
                 .map_err(|_| format!("program org out of range for u16: {org}"))?;
-            record.machine.load(org, &bytes);
+            record.machine.load(org.into(), &bytes);
             Ok(())
         }
         other => Err(format!(
@@ -1301,8 +1305,8 @@ fn handle_machine_command(
             space,
         } => Ok(MachineResponse::Memory(read_memory_in_space(
             &record.machine,
-            address,
-            len,
+            address.try_into().unwrap(),
+            len.try_into().unwrap(),
             space.as_deref(),
         )?)),
         MachineCommand::WriteMemory {
@@ -1310,8 +1314,12 @@ fn handle_machine_command(
             bytes,
             space,
         } => {
-            let written =
-                write_memory_in_space(&mut record.machine, address, &bytes, space.as_deref())?;
+            let written = write_memory_in_space(
+                &mut record.machine,
+                address.try_into().unwrap(),
+                &bytes,
+                space.as_deref(),
+            )?;
             Ok(MachineResponse::BytesWritten(written as u32))
         }
         MachineCommand::LoadBytes { address, bytes } => {
@@ -1513,7 +1521,9 @@ fn handle_machine_command(
             })?;
             Ok(MachineResponse::Frame { width, height, rgb })
         }
-        MachineCommand::DrainAudio => Ok(MachineResponse::AudioPcmMono {
+        MachineCommand::AxisEvent { .. } => Err("this machine has no analogue axes".to_string()),
+        MachineCommand::DrainAudio => Ok(MachineResponse::AudioPcm {
+            channels: 1,
             sample_rate: AUDIO_SAMPLE_RATE,
             samples: record.machine.drain_audio(),
         }),
@@ -1586,8 +1596,8 @@ fn handle_debug_command(
             space,
         } => Ok(DebugResponse::Memory(read_memory_in_space(
             &record.machine,
-            address,
-            len,
+            address.try_into().unwrap(),
+            len.try_into().unwrap(),
             space.as_deref(),
         )?)),
         DebugCommand::WriteMemory {
@@ -1595,7 +1605,12 @@ fn handle_debug_command(
             bytes,
             space,
         } => {
-            write_memory_in_space(&mut record.machine, address, &bytes, space.as_deref())?;
+            write_memory_in_space(
+                &mut record.machine,
+                address.try_into().unwrap(),
+                &bytes,
+                space.as_deref(),
+            )?;
             Ok(DebugResponse::Ack)
         }
         DebugCommand::GetDisassembly { start, lines } => {
@@ -1603,7 +1618,11 @@ fn handle_debug_command(
             let mut out = Vec::with_capacity(lines as usize);
             for _ in 0..lines {
                 let raw: Vec<u8> = (0..4u16)
-                    .map(|offset| record.machine.read_memory(cursor.wrapping_add(offset)))
+                    .map(|offset| {
+                        record
+                            .machine
+                            .read_memory(cursor.wrapping_add(offset.into()))
+                    })
                     .collect();
                 let (text, consumed) = z80::disassemble::disassemble(&raw);
                 let consumed = consumed.clamp(1, 4);
@@ -1612,12 +1631,21 @@ fn handle_debug_command(
                     bytes: raw[..consumed].to_vec(),
                     text,
                 });
-                cursor = cursor.wrapping_add(consumed as u16);
+                cursor = cursor.wrapping_add((consumed as u16).into());
             }
             Ok(DebugResponse::Disassembly(out))
         }
         DebugCommand::GetMediaSnapshot => Ok(DebugResponse::MediaSnapshot(media_snapshot(record))),
         DebugCommand::GetChipSnapshots => Ok(DebugResponse::ChipSnapshots(chip_snapshots(record))),
+        DebugCommand::OnCpu { cpu, command } => {
+            if cpu == "main" {
+                handle_debug_command(record, *command)
+            } else {
+                Err(format!(
+                    "unknown cpu \"{cpu}\" (this machine has only \"main\")"
+                ))
+            }
+        }
         DebugCommand::GetMachineMetadata => Ok(DebugResponse::MachineMetadata(MachineMetadata {
             machine_id: record.kind.machine_id().to_string(),
             model: Some(record.kind.machine_id().to_string()),
@@ -1625,6 +1653,7 @@ fn handle_debug_command(
             notes: vec!["external machine plugin v1".to_string()],
             bitmap_palette: bitmap_palette(),
             bitmap_defaults: Some(bitmap_defaults()),
+            ..MachineMetadata::default()
         })),
     }
 }
@@ -1768,10 +1797,15 @@ fn plugin_halted_inner(instance: MachineInstanceHandle) -> u8 {
 
 /// Fast path for `MachinePluginVTableV1::pc`.
 extern "C" fn plugin_pc_v1(instance: MachineInstanceHandle) -> u16 {
-    plugin_api::guard::guarded("pc", 0, || plugin_pc_inner(instance))
+    plugin_api::guard::guarded("pc", 0, || plugin_pc_inner(instance) as u16)
 }
 
-fn plugin_pc_inner(instance: MachineInstanceHandle) -> u16 {
+/// Fast path for `MachinePluginVTableV1::pc_wide`.
+extern "C" fn plugin_pc_wide_v1(instance: MachineInstanceHandle) -> u64 {
+    plugin_api::guard::guarded("pc_wide", 0, || plugin_pc_inner(instance))
+}
+
+fn plugin_pc_inner(instance: MachineInstanceHandle) -> u64 {
     let Ok(state) = state().lock() else {
         return 0;
     };
@@ -2324,7 +2358,7 @@ mod tests {
             let written = call_memory(
                 instance,
                 MachineCommand::WriteMemory {
-                    address: offset,
+                    address: u64::from(offset),
                     bytes: vec![0xDE, 0xAD],
                     space: space.clone(),
                 },
@@ -2335,7 +2369,7 @@ mod tests {
             let read = call_memory(
                 instance,
                 MachineCommand::ReadMemory {
-                    address: offset,
+                    address: u64::from(offset),
                     len: 2,
                     space,
                 },

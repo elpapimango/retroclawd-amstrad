@@ -108,8 +108,8 @@ struct Setup {
 
 fn prepare(bytes: &[u8], setup: Setup) -> Cpc {
     let mut cpc = fresh();
-    cpc.load(PROGRAM, bytes);
-    cpc.set_pc(PROGRAM);
+    cpc.load(PROGRAM.into(), bytes);
+    cpc.set_pc(PROGRAM.into());
     // Memory operands land in zeroed RAM; RET/POP read a return address of
     // 0 (all NOPs); the stack is in RAM.
     for (name, value) in [
@@ -153,7 +153,7 @@ fn took_branch(prelude: &[u8], instruction: &[u8], setup: Setup) -> bool {
     }
     let start = cpc.pc();
     cpc.step();
-    cpc.pc() != start + z80::disassemble::disassemble(instruction).1 as u16
+    cpc.pc() != start + z80::disassemble::disassemble(instruction).1 as u64
 }
 
 /// Effective totals for the port instructions, whose Caprice32 table entry is

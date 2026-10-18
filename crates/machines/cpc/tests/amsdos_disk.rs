@@ -163,22 +163,24 @@ fn real_amsdos_writes_a_file_and_reads_it_back_through_the_fdc() {
     run_until(&mut cpc, 25_000_000, |_| false);
 
     let source: Vec<u8> = (0..LEN as usize).map(pattern).collect();
-    cpc.load(SOURCE, &source);
-    cpc.load(FILENAME, b"TEST.BIN");
-    cpc.load(PROGRAM, &write_then_read_program());
-    cpc.load(STATUS, &[0]);
-    cpc.set_pc(PROGRAM);
+    cpc.load(SOURCE.into(), &source);
+    cpc.load(FILENAME.into(), b"TEST.BIN");
+    cpc.load(PROGRAM.into(), &write_then_read_program());
+    cpc.load(STATUS.into(), &[0]);
+    cpc.set_pc(PROGRAM.into());
 
-    run_until(&mut cpc, 120_000_000, |c| c.read_memory(STATUS) != 0);
+    run_until(&mut cpc, 120_000_000, |c| c.read_memory(STATUS.into()) != 0);
 
-    let status = cpc.read_memory(STATUS);
+    let status = cpc.read_memory(STATUS.into());
     assert_ne!(status, 0, "the program never finished");
     assert_eq!(
         status, 0xFF,
         "firmware call failed at stage {status} (1=OUT OPEN 2=OUT DIRECT 3=OUT CLOSE 4=IN OPEN 5=IN DIRECT 6=IN CLOSE)"
     );
 
-    let loaded: Vec<u8> = (0..LEN).map(|i| cpc.read_memory(LOADED + i)).collect();
+    let loaded: Vec<u8> = (0..LEN)
+        .map(|i| cpc.read_memory((LOADED + i).into()))
+        .collect();
     assert_eq!(
         loaded, source,
         "data read back through AMSDOS differs from what was written"
