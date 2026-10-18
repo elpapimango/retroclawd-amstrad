@@ -1,0 +1,13 @@
+# rcld build hello.toml -o hello.dsk   (scenarios/build.sh builds it into software/scenarios/)
+machine = "cpc"
+name = "HELLO"
+entry = "start"
+output = "hello.dsk"
+
+[[input]]
+asm = ["hello.asm"]
+
+[[region]]
+name = "ram"
+start = 0x4000
+end = 0xA6FF

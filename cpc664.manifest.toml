@@ -1,0 +1,61 @@
+machine = "cpc664"
+# Goldens are the whole ZEsarUX picture on retroclawd's canvas (capture_zesarux_screen.py --crop 0,-16,768,576: the same
+# 2x scale and horizontal position, 16 rows lower in retroclawd, the border colour filling the gap), compared with
+# retroclawd's picture. S4 (sound) and S7 (hardware test ROMs: the acid suites run in the hand-written suite) are not here
+# yet. The CPC Plus and GX4000 are not in ZEsarUX, so they have no manifest.
+args = ["--no-border"]
+
+[reference]
+emulator = "zesarux"
+version = "13.0"
+command = "retroclawd-tools/scripts/capture_zesarux_screen.py CPC664 8 OUT.png --crop 0,-16,768,576 [--keys 'print 1234 mod 100{ENTER}' --after 2 | --load FILE --keys 'cat{ENTER}' --after 3]   (zesarux --machine CPC664 --realvideo, save-screen over ZRCP)"
+
+[files]
+rom = "amstrad/roms/cpc/cpc664.rom"
+
+[[scenario]]
+id = "S1"
+kind = "screen"
+frames = 250
+golden = "cpc664/S1-boot.png"
+golden_sha256 = "c6501dcd801b77613e13ef6062f2a7503f893c2913c09a461c2f1645258b97ad"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.15, 0.95, 0.40], reason = "the cursor (it blinks) is outside the crop; another emulator's rasteriser; the crop is the banner and the Ready prompt (the pictures were compared pixel by pixel and are identical, the tolerance only absorbs scaling noise)" }
+
+[[scenario]]
+id = "S2"
+kind = "screen"
+frames = 700
+args = ["--type-after", "200", "--type-delay", "100", "--type", "print 1234 mod 100\n"]
+golden = "cpc664/S2-mod.png"
+golden_sha256 = "ccb83ae2e840f80decb0e4fb7146dfa88f049c3ef530759897ce18e90e80243d"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.15, 0.95, 0.465], reason = "the cursor (it blinks) is outside the crop; another emulator's rasteriser; the crop is the banner, the typed line and its answer 34" }
+
+# The disk is made by rcld (scenarios/cpc/hello.asm, one file HELLO.BIN); CAT lists it. (RUN"HELLO is not used: it
+# ends in a reset in both emulators, so it would only compare two resets.)
+[[scenario]]
+id = "S3-cat"
+kind = "screen"
+frames = 900
+args = ["--type-after", "200", "--type-delay", "100", "--type", "cat\n"]
+files = { disk = "amstrad/software/scenarios/cpc-hello.dsk" }
+golden = "cpc664/S3-cat.png"
+golden_sha256 = "8c7ac9664959a2c1930cd1e119b4df8640b0f3295ab0683a7b382654c716332a"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.15, 0.95, 0.60], reason = "the cursor (it blinks) is outside the crop; another emulator's rasteriser; the crop is the CAT listing (drive, HELLO.BIN 1K, 177K free)" }
+
+[[scenario]]
+id = "S5"
+kind = "state"
+frames = 700
+more_frames = 100
+args = ["--type-after", "200", "--type-delay", "100", "--type", "print 1234 mod 100\n"]
+
+# ZEsarUX's frame is 79872 T-states (312 lines of 256, measured as 6 interrupts of 13312), the machine's is 80000
+# (4 MHz / 50 Hz). Known gap, see the note.
+[[scenario]]
+id = "S6"
+kind = "timing"
+frames = 100
+cycles_per_frame = 79872
+cycles_tolerance = 23
+status = "known-gap"
+gap = { reason = "ZEsarUX runs 79872 T-states per frame (13312 between interrupts), retroclawd 80000 (4 MHz / 50 Hz)", evidence = "machines/amstrad/docs/cpc-timing-gap.md" }
