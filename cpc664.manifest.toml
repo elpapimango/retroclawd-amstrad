@@ -51,6 +51,41 @@ frames = 1000
 args = ["--type-after", "200", "--type-delay", "100", "--type", "sound 1,240,1000\n"]
 audio = { from_s = 12.0, to_s = 16.0, tone_hz = 260.4, tone_tolerance_pct = 1.0, min_amplitude = 0.02 }
 
+# S7: Lyle Llopis' amstrad-diagnostics v1.3 (MIT) from its disk: RUN"DIAG shows the menu after its lower RAM test. The reference
+# is ZEsarUX 13.0 with the same disk, 28 s in. The picture is compared in two parts, the system info and the test results; the
+# CRTC and FDC lines between them are a known gap (S7-hw), where the reference reports a CRTC type 4 and no FDC.
+[[scenario]]
+id = "S7"
+kind = "screen"
+frames = 1400
+args = ["--type-after", "150", "--type-delay", "80", "--type", "RUN\"DIAG\n"]
+files = { disk = "amstrad/software/diagnostics/AmstradDiag.dsk" }
+golden = "cpc664/S7-diag.png"
+golden_sha256 = "979938cabef58bd76a36e6848aaa80649f578331349aa7946b462f1f30e579e5"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.12, 0.95, 0.375], reason = "another emulator's rasteriser; the crop is the title bar, the model, vendor, refresh rate and RAM size and the list of tests" }
+
+[[scenario]]
+id = "S7-results"
+kind = "screen"
+frames = 1400
+args = ["--type-after", "150", "--type-delay", "80", "--type", "RUN\"DIAG\n"]
+files = { disk = "amstrad/software/diagnostics/AmstradDiag.dsk" }
+golden = "cpc664/S7-diag.png"
+golden_sha256 = "979938cabef58bd76a36e6848aaa80649f578331349aa7946b462f1f30e579e5"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.46, 0.95, 0.68], reason = "another emulator's rasteriser; the crop is the TEST RESULTS block: LOWER RAM PASSED, the others untested" }
+
+[[scenario]]
+id = "S7-hw"
+kind = "screen"
+frames = 1400
+args = ["--type-after", "150", "--type-delay", "80", "--type", "RUN\"DIAG\n"]
+files = { disk = "amstrad/software/diagnostics/AmstradDiag.dsk" }
+golden = "cpc664/S7-diag.png"
+golden_sha256 = "979938cabef58bd76a36e6848aaa80649f578331349aa7946b462f1f30e579e5"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.385, 0.95, 0.44], reason = "another emulator's rasteriser; the crop is the CRTC and FDC lines" }
+status = "known-gap"
+gap = { reason = "the diagnostics read the CRTC type and probe the FDC: ZEsarUX answers CRTC 04 (the ASIC's type) and FDC NONE on a CPC664 with a disk in the drive, retroclawd CRTC 00 and FDC DETECTED; the reference looks wrong on both, but nothing here shows which CRTC type the real machine had", evidence = "machines/amstrad/docs/cpc-diag-crtc-fdc-gap.md" }
+
 [[scenario]]
 id = "S5"
 kind = "state"
