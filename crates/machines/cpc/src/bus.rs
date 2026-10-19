@@ -2888,8 +2888,8 @@ pub(crate) mod tests {
 
         assert_eq!(
             cpc.bus.read_io(0xFB7E),
-            0x30,
-            "waiting for the sector: busy, execution, no RQM"
+            0x10,
+            "searching for the sector: busy only, no RQM"
         );
         assert_eq!(
             fdc_wait_rqm(&mut cpc),
