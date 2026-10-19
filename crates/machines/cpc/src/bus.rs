@@ -722,38 +722,27 @@ impl CpcBus {
             .is_some_and(|asic| asic.active() && asic.pri() != 0)
     }
 
-    /// Compares the real CRTC line/raster counters against the
-    /// programmed PRI line (see `crate::asic`'s own doc comment for the
-    /// exact hardware-sourced formula) and fires it if they match.
-    /// Returns whether it fired this call.
-    fn asic_check_pri(&mut self) -> bool {
-        let CpcBus {
-            asic,
-            crtc,
-            gate_array,
-            ..
-        } = self;
-        let Some(asic) = asic.as_mut() else {
+    /// Raises the programmable raster interrupt the CRTC found at an HSYNC
+    /// fall (`Crtc::set_pri`, `CrtcEvents::pri_falls`). Returns whether it
+    /// fired (the ASIC may have been locked or PRI cleared since).
+    fn asic_trigger_pri(&mut self) -> bool {
+        let Some(asic) = self.asic.as_mut() else {
             return false;
         };
         if !asic.active() || asic.pri() == 0 {
             return false;
         }
-        let pri = asic.pri();
-        // Only the raster counter's low three bits and the row counter's low
-        // six are compared, so a character row taller than eight lines
-        // matches every eight and a frame of more than 64 rows matches again
-        // (`pritest`'s "pri repeat (r9>8)": R9 = 31, four per frame; "pri
-        // wrap": 128 rows, two).
-        if crtc.vertical_counter() & 0x3F == (pri >> 3) & 0x1F
-            && crtc.raster_counter() & 0x07 == (pri & 0x07)
-        {
-            asic.trigger_raster();
-            gate_array.reset_top_bit();
-            true
-        } else {
-            false
-        }
+        asic.trigger_raster();
+        self.gate_array.reset_top_bit();
+        true
+    }
+
+    /// The PRI line the CRTC compares against (0 = off).
+    fn pri_line(&self) -> u8 {
+        self.asic
+            .as_ref()
+            .filter(|asic| asic.active())
+            .map_or(0, crate::asic::Asic::pri)
     }
 
     /// Runs one DMA instruction step per enabled channel (see
@@ -1893,7 +1882,15 @@ impl Bus for CpcBus {
         {
             return;
         }
-        self.gate_array.acknowledge_interrupt();
+        if self.asic_pri_active() {
+            // The raster interrupt is the ASIC's PRI: taking it leaves the Gate
+            // Array's line counter alone (`pritest`'s "PRI can delay normal
+            // raster interrupt": a PRI on the line the counter reaches 32
+            // leaves it at 32, the next classic interrupt 20 lines on).
+            self.gate_array.cancel_interrupt();
+        } else {
+            self.gate_array.acknowledge_interrupt();
+        }
     }
 }
 
@@ -2389,6 +2386,8 @@ impl Cpc {
         if tstates == 0 {
             return crate::crtc::CrtcEvents::default();
         }
+        let pri = self.bus.pri_line();
+        self.bus.crtc.set_pri(pri);
         let Cpc { bus, raster, .. } = self;
         let CpcBus {
             crtc, ram, asic, ..
@@ -2448,7 +2447,17 @@ impl Machine for Cpc {
         let cycles = u32::from(self.cpu.step(&mut self.bus));
         self.bus.finish_instruction(cycles);
         let events = self.advance_video(cycles);
-        for _ in 0..events.hsync_falls {
+        for fall in 0..events.hsync_falls {
+            // A PRI clears bit 5 of the Gate Array's line counter before that
+            // counter takes the same HSYNC fall (`pritest`'s "PRI can delay
+            // normal raster interrupt": with the counter at 51 the next classic
+            // interrupt comes 32 lines later, at 31 it comes 20 later).
+            if u32::from(fall) < 16
+                && events.pri_falls & (1 << fall) != 0
+                && self.bus.asic_trigger_pri()
+            {
+                self.bus.gate_array.assert_interrupt();
+            }
             let classic_interrupt = self.bus.gate_array.hsync_falling_edge();
             // Real hardware: classic CPC-style interrupts and the CPC
             // Plus/GX4000 Programmable Raster Interrupt cannot be active
@@ -2457,9 +2466,6 @@ impl Machine for Cpc {
             // suppressed (see `CpcBus::asic_pri_active`'s own doc
             // comment). On a classic CPC (no ASIC) this is always false.
             if !self.bus.asic_pri_active() && classic_interrupt {
-                self.bus.gate_array.assert_interrupt();
-            }
-            if self.bus.asic_check_pri() {
                 self.bus.gate_array.assert_interrupt();
             }
             if let Some(results) = self.bus.step_asic_dma() {

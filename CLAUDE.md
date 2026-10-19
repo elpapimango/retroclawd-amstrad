@@ -56,6 +56,17 @@ The notes below were written in the host repository before the split and refer t
   drives 0/1, the Scan commands). Disk loads now take real time, as on the machine. Port-level unit tests wait for the
   disk through `bus::tests::fdc_wait_rqm`/`fdc_in`/`fdc_out`; the real-firmware AMSDOS round trip passes unchanged. Kevin
   Thacker's `fdc_*` programs are the check (see the host `TODO.md`, "Acid suites").
+- **PRI edges and FDC DMA mode (2026-10-19, later)**: the PRI compare moved into the CRTC (`Crtc::set_pri`, set from the
+  ASIC before every tick): the ASIC latches whether the PRI line is current when HSYNC begins and raises the interrupt as
+  HSYNC ends if it was then or is now, so an HSYNC that runs to the end of its line also fires on the line before
+  (`pritest`'s "PRI trigger bug" cases fire twice per frame from R2 = 50 with a 14-character HSYNC, or from width 4 at
+  R2 = 60). Each fall reports in `CrtcEvents::pri_falls`, at the exact character instead of the counters at the end of the
+  instruction. A PRI clears bit 5 of the Gate Array's line counter *before* that counter takes the same HSYNC fall, and
+  acknowledging the PRI's interrupt leaves the counter alone (only the Gate Array's own interrupt clears bit 5 when taken):
+  both read off "PRI can delay normal raster interrupt" (counter 51 -> next classic interrupt 32 lines on, 31 -> 20).
+  `nec765` gained DMA mode (Specify `ND` = 0; see its module doc): no `EXM`/`RQM` in the execution phase, a read ends
+  with ST1/ST2 data error (the 6128's `/DACK` resistor), a write ends normally, Read ID still shows `EXM` while reading
+  the ID field. Acid results in the host `TODO.md` ("Acid suites").
 - **CPC Plus acid fixes (2026-10-19)**: Kevin Thacker's acid programs (`asictest`, `asicfloat`, `asicrom`, `asicppi`,
   `asic_external_ram`, `dmatest`, `pritest`, `cpctest`; checked by their author on real machines; run by `rc-suite`'s
   `cpc_acid.rs`) found, all fixed: (1) the ASIC register page was gated behind the lower-ROM-enable bit, so a program

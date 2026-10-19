@@ -146,12 +146,17 @@ pub(crate) struct CrtcEvents {
     /// frame interrupt sequence.
     pub vsync_rises: u8,
     pub frame_starts: u8,
+    /// CPC+ PRI: bit `n` is set when the `n`th HSYNC fall of the span raised
+    /// the programmable raster interrupt (see `Crtc::set_pri`).
+    pub pri_falls: u16,
 }
 
 impl CrtcEvents {
     /// Accumulates another span's events (one instruction's tick can be
     /// split at the T-states of its video-affecting writes).
     pub(crate) fn merge(&mut self, other: CrtcEvents) {
+        let shift = u32::from(self.hsync_falls).min(16);
+        self.pri_falls |= other.pri_falls.checked_shl(shift).unwrap_or(0);
         self.hsync_falls = self.hsync_falls.saturating_add(other.hsync_falls);
         self.vsync_rises = self.vsync_rises.saturating_add(other.vsync_rises);
         self.frame_starts = self.frame_starts.saturating_add(other.frame_starts);
@@ -228,6 +233,13 @@ pub struct Crtc {
     /// CPC+ screen split: `(line, MA)`. From `frame_line == line` on, the
     /// row address restarts from that `MA` (`line == 0` means no split).
     split: Option<(u8, u16)>,
+    /// CPC+ programmable raster interrupt line (`&6800`), 0 = off; the bus sets
+    /// it from the ASIC before each tick.
+    #[serde(default)]
+    pri: u8,
+    /// Whether the PRI line matched when the current HSYNC began.
+    #[serde(default)]
+    pri_matched_at_hsync_start: bool,
 }
 
 impl Default for Crtc {
@@ -254,6 +266,8 @@ impl Default for Crtc {
             frame_counter: 0,
             frame_line: 0,
             split: None,
+            pri: 0,
+            pri_matched_at_hsync_start: false,
         }
     }
 }
@@ -495,16 +509,7 @@ impl Crtc {
         self.vsync
     }
 
-    /// Real CRTC character-line counter, needed by the CPC Plus ASIC's
-    /// Programmable Raster Interrupt compare (see `crate::asic`'s own
-    /// doc comment) -- exposed read-only since only that one real
-    /// consumer needs it from outside this module.
-    pub(crate) fn vertical_counter(&self) -> u8 {
-        self.vertical_counter
-    }
-
-    /// Real CRTC raster-row-within-character counter, same ASIC PRI use
-    /// as `vertical_counter`.
+    /// Real CRTC raster-row-within-character counter (the overlay reports it).
     pub(crate) fn raster_counter(&self) -> u8 {
         self.raster_counter
     }
@@ -518,11 +523,37 @@ impl Crtc {
         )
     }
 
+    /// The CPC+ programmable raster interrupt line (`&6800`; 0 = off).
+    pub(crate) fn set_pri(&mut self, pri: u8) {
+        self.pri = pri;
+    }
+
+    /// Whether the line and raster counters are on the PRI line. Only the
+    /// raster counter's low three bits and the row counter's low six are
+    /// compared, so a character row taller than eight lines matches every
+    /// eight and a frame of more than 64 rows matches again (`pritest`'s "pri
+    /// repeat (r9>8)": R9 = 31, four per frame; "pri wrap": 128 rows, two).
+    fn on_pri_line(&self) -> bool {
+        self.pri != 0
+            && self.vertical_counter & 0x3F == (self.pri >> 3) & 0x1F
+            && self.raster_counter & 0x07 == self.pri & 0x07
+    }
+
     fn tick_character<F: FnMut(&CharClock)>(&mut self, events: &mut CrtcEvents, on_char: &mut F) {
         if self.hsync_remaining != 0 {
             self.hsync_remaining -= 1;
             if self.hsync_remaining == 0 {
                 self.hsync = false;
+                // The ASIC raises the PRI as HSYNC ends, if the PRI line was
+                // current when HSYNC began or is now. An HSYNC that runs to the
+                // end of its line therefore fires on the line before the PRI
+                // line too, two interrupts in a frame (`pritest`'s "PRI trigger
+                // bug": R2 >= R0 + 1 - width, or R3 wide enough from R2 = 60).
+                if (self.pri_matched_at_hsync_start || self.on_pri_line())
+                    && let Some(bit) = 1u16.checked_shl(u32::from(events.hsync_falls))
+                {
+                    events.pri_falls |= bit;
+                }
                 events.hsync_falls = events.hsync_falls.saturating_add(1);
             }
         }
@@ -532,6 +563,7 @@ impl Crtc {
             if width != 0 {
                 self.hsync = true;
                 self.hsync_remaining = width;
+                self.pri_matched_at_hsync_start = self.on_pri_line();
             }
         }
 
@@ -1309,17 +1341,46 @@ mod tests {
         assert!(clocks.iter().all(|clock| clock.ma < 0x2000));
     }
 
+    /// PRI interrupts in one frame of 4 rows x 8 lines with a 64-character
+    /// line, HSYNC at `r2` for `width` characters, PRI on line 12.
+    fn pri_fires_per_frame(r2: u8, width: u8) -> u32 {
+        let mut crtc = Crtc::new();
+        write(&mut crtc, 0, 63);
+        write(&mut crtc, 1, 40);
+        write(&mut crtc, 2, r2);
+        write(&mut crtc, 3, width);
+        write(&mut crtc, 4, 3);
+        write(&mut crtc, 7, 2);
+        write(&mut crtc, 9, 7);
+        crtc.set_pri(12);
+        (0..64 * 32)
+            .map(|_| crtc.tick(4).pri_falls.count_ones())
+            .sum()
+    }
+
+    #[test]
+    fn an_hsync_ending_on_the_next_line_fires_the_pri_on_the_line_before_too() {
+        // HSYNC 49..62 ends inside its own line: one PRI, as HSYNC ends on line 12.
+        assert_eq!(pri_fires_per_frame(49, 14), 1);
+        // HSYNC 50..63 ends as line 12 begins (line 11's HSYNC) and again on line 12.
+        assert_eq!(pri_fires_per_frame(50, 14), 2);
+        assert_eq!(pri_fires_per_frame(60, 3), 1);
+        assert_eq!(pri_fires_per_frame(60, 4), 2);
+    }
+
     fn events_from_split_ticks_merge() {
         let mut total = CrtcEvents::default();
         total.merge(CrtcEvents {
             hsync_falls: 1,
             vsync_rises: 0,
             frame_starts: 2,
+            pri_falls: 0b1,
         });
         total.merge(CrtcEvents {
             hsync_falls: 2,
             vsync_rises: 1,
             frame_starts: 250,
+            pri_falls: 0b10, // the second fall of this span
         });
         assert_eq!(
             total,
@@ -1327,6 +1388,7 @@ mod tests {
                 hsync_falls: 3,
                 vsync_rises: 1,
                 frame_starts: 252,
+                pri_falls: 0b101,
             }
         );
     }
