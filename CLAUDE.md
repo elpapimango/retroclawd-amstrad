@@ -13,6 +13,13 @@ The Amstrad CPC machine family of retroclawd, split out of the main repository (
 - `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`
 - Private host: `CARGO_NET_GIT_FETCH_WITH_CLI=true` and git credentials for `github.com/elpapimango/retroclawd`
 
+## Scenario manifests (2026-10-18)
+
+`cpc464, cpc664 and cpc6128` have `<id>.manifest.toml` files here: the playbook's standard scenarios (S1 boot, S2 typed input, S3 media, S4 audio, S5 state, S6
+timing, S7 hardware test) against ZEsarUX 13.0, run by `rc-scenarios` of `retroclawd-tools` (see the host's `CLAUDE.md` for the command and
+environment). The test media come from `scenarios/cpc/hello.asm` (an rcld layout; the disk is only listed with CAT, `RUN"HELLO` ends in a reset in both emulators); `scenarios/build.sh` builds them into the git-ignored `software/scenarios/`. Goldens are
+not committed. Known gaps are `status = "known-gap"` entries with a note under `docs/`: S6 (`docs/cpc-timing-gap.md`) and the diagnostics' CRTC/FDC lines (`docs/cpc-diag-crtc-fdc-gap.md`).
+
 ## Crate notes
 
 The notes below were written in the host repository before the split and refer to it in places (`retroclawd`'s GUI, `HostedMachine`, `emu_thread`, the CLI flags): those parts are host code and are documented in the host's CLAUDE.md.
