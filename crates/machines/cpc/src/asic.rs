@@ -130,21 +130,9 @@ pub(crate) struct Asic {
     /// write from a classic MRER write at the very same I/O port).
     rmr2: u8,
     ram: Vec<u8>,
-    /// Vector-byte low bits of whichever interrupt source fired most
-    /// recently -- real hardware only tracks one at a time (see module
-    /// doc comment).
+    /// Vector-byte low bits of the interrupt the CPU acknowledged last
+    /// (see `acknowledge`): `6` raster, `channel * 2` DMA.
     irq_cause: u8,
-    /// Real hardware's own documented, intentional quirk: with DCSR bit 0
-    /// left at its reset default (`1`, "clear disabled" -- CPCTech's own
-    /// page: "my advice is that you should not use the automatic
-    /// interrupt clear feature"), a DMA-caused interrupt's `/INT` line
-    /// stays asserted until software explicitly acknowledges it by
-    /// writing the matching bit back to DCSR (`0x2C0F`). `Cpc::step`
-    /// re-requests the CPU interrupt every instruction while this is
-    /// true, exactly matching a real held `/INT` line being re-sampled
-    /// every instruction boundary (raster interrupts never set this --
-    /// real hardware always auto-clears those, see `interrupt_vector_byte`).
-    irq_unacknowledged: bool,
     dma_status: u8,
     dma_clear_disabled: bool,
     dma_addr: [u16; 3],
@@ -160,6 +148,11 @@ pub(crate) struct Asic {
     /// cutoffs: makes the feature actually usable, not a hardware
     /// measurement. `0x00`/`0x3F` are the pressed extremes.
     analog: [u8; 4],
+    /// Each sprite's coordinate bytes (X lo, X hi, Y lo, Y hi) exactly as
+    /// written, which `+4..+7` of its 8-byte block read back (`asictest`'s
+    /// "sprite coord mirror" compares all 65536 values); `+0..+3` read the
+    /// decoded coordinates, see `write_high`.
+    coord_latch: [[u8; 4]; 16],
 }
 
 impl Default for Asic {
@@ -172,7 +165,6 @@ impl Default for Asic {
             rmr2: 0,
             ram: vec![0; ASIC_RAM_SIZE],
             irq_cause: RASTER_IRQ_CAUSE,
-            irq_unacknowledged: false,
             dma_status: 0,
             // Real reset default per CPCTech's own page and MAME's own
             // `MACHINE_RESET_MEMBER(plus/gx4000)`: DMA interrupts must be
@@ -184,6 +176,7 @@ impl Default for Asic {
             dma_repeat: [0; 3],
             dma_loopcount: [0; 3],
             analog: [0x1F; 4],
+            coord_latch: [[0; 4]; 16],
         }
     }
 }
@@ -193,6 +186,7 @@ impl Asic {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
     }
@@ -246,15 +240,21 @@ impl Asic {
     }
 
     /// A classic Gate Array ink write (`OUT (&7Fxx)` with function `01`), which a CPC+/GX4000 still honours: the ASIC
-    /// palette entry of `pen` (`16` = border) becomes the 12-bit form of the 27-colour hardware number `hardware`
-    /// (each channel's off/half/full level is `0`/`8`/`F`, which renders exactly like the classic palette). Without this
-    /// a program that sets its colours the old way -- every CPC program, and the `.cpr` diagnostics -- shows black.
-    /// Returns the colour now in the entry.
+    /// palette entry of `pen` (`16` = border) becomes the 12-bit form of the 27-colour hardware number `hardware`:
+    /// each channel's off/half/full level is `0`/`6`/`F`, the values the ASIC writes into its palette RAM (Kevin
+    /// Thacker's `asictest` reads them back: hardware colour 0 is `&0666`, 12 is `&00F0`). Without this a program that
+    /// sets its colours the old way -- every CPC program, and the `.cpr` diagnostics -- shows black. Returns the colour
+    /// now in the entry.
     pub(crate) fn set_legacy_ink(&mut self, pen: u8, hardware: u8) -> (u8, u8, u8) {
         let (r, g, b) = crate::gate_array::PALETTE[usize::from(hardware & 0x1F)];
+        let level = |c: u8| match c {
+            0 => 0x0,
+            0xFF => 0xF,
+            _ => 0x6,
+        };
         let idx = PALETTE_BASE + usize::from(pen.min(16)) * 2;
-        self.ram[idx] = (r & 0xF0) | (b >> 4);
-        self.ram[idx + 1] = g >> 4;
+        self.ram[idx] = (level(r) << 4) | level(b);
+        self.ram[idx + 1] = level(g);
         self.pen_color(pen)
     }
 
@@ -366,12 +366,15 @@ impl Asic {
         self.prev_seq_byte = data;
     }
 
-    /// A Gate Array function-2 write with bit 5 set targets RMR2 instead
-    /// of the classic MRER -- only takes effect once unlocked. Returns
-    /// whether this write was consumed as an RMR2 write (the caller must
-    /// not also apply it as a classic MRER write when this is `true`).
+    /// A Gate Array function-2 write (`10xxxxxx`) with bit 5 set targets
+    /// RMR2 instead of the classic MRER -- only takes effect once unlocked.
+    /// Pen selects and ink writes with bit 5 set (`0x20-0x3F`, `0x60-0x7F`)
+    /// stay ordinary Gate Array writes (`asictest`'s "CPC pen/colour set
+    /// (bit 5=1)"). Returns whether this write was consumed as an RMR2 write
+    /// (the caller must not also apply it as a classic MRER write when this
+    /// is `true`).
     pub(crate) fn maybe_write_rmr2(&mut self, val: u8) -> bool {
-        if self.enabled && val & 0x20 != 0 {
+        if self.enabled && val & 0xE0 == 0xA0 {
             self.rmr2 = val;
             true
         } else {
@@ -381,12 +384,35 @@ impl Asic {
 
     /// One byte of the full `0x4000-0x7FFF` memory-mapped window,
     /// `offset` relative to `0x4000` (`0..0x4000`). Routes ADC reads
-    /// through `analog_read`; everything else is plain register storage.
-    pub(crate) fn read_window(&self, offset: usize) -> u8 {
+    /// through `analog_read`; `None` where nothing answers -- the bus then
+    /// reads the last byte on the data bus. Kevin Thacker's `asicfloat`
+    /// (checked on a real 6128 Plus) finds these floating: `&5000-&5FFF`,
+    /// `&6080-&63FF`, `&6440-&67FF`, the write-only `&6800-&6807` (PRI,
+    /// split, soft scroll, vector), `&6810-&6BFF` and `&6C10-&7FFF`.
+    pub(crate) fn read_window(&self, offset: usize) -> Option<u8> {
         if (ANALOG_BASE..ANALOG_BASE + 8).contains(&offset) {
-            return self.analog_read(offset - ANALOG_BASE);
+            return Some(self.analog_read(offset - ANALOG_BASE));
         }
-        self.ram[offset]
+        // `+4..+7` of a sprite's block (magnification is write-only) read its
+        // coordinate bytes as written.
+        if (SPRITE_INFO_BASE..SPRITE_INFO_BASE + 16 * 8).contains(&offset) && offset & 4 != 0 {
+            return Some(self.coord_latch[(offset - SPRITE_INFO_BASE) / 8][offset & 3]);
+        }
+        // The DMA registers are write-only; every address of the block reads
+        // DCSR (`asictest`'s "DCSR mirror").
+        if (DMA_ADDR_LO[0]..=DCSR_REGISTER).contains(&offset) {
+            return Some(self.dcsr());
+        }
+        let floating = matches!(
+            offset + 0x4000,
+            0x5000..=0x5FFF
+                | 0x6080..=0x63FF
+                | 0x6440..=0x67FF
+                | 0x6800..=0x6807
+                | 0x6810..=0x6BFF
+                | 0x6C10..=0x7FFF
+        );
+        (!floating).then(|| self.ram[offset])
     }
 
     /// `0x4000-0x5FFF` write (sprite pixel data) -- real hardware ties
@@ -405,13 +431,26 @@ impl Asic {
         if (0x0400..0x0440).contains(&offset) && offset & 1 == 1 {
             self.ram[idx] = val & 0x0F;
         }
+        // Sprite coordinates: X is 10 bits (-256..=767), Y 9 bits (-256..=255); the high byte keeps only those bits and
+        // reads back sign-extended, `&FF` for a negative coordinate (`asictest`'s "sprite coord test x/y (l/h)": X high
+        // 2 reads 2, 3 reads FF; Y high 1 reads FF). The bytes as written are kept for the `+4..+7` mirror.
+        if (SPRITE_INFO_BASE..SPRITE_INFO_BASE + 16 * 8).contains(&idx) && idx & 4 == 0 {
+            self.coord_latch[(idx - SPRITE_INFO_BASE) / 8][idx & 3] = val;
+            match idx & 7 {
+                1 => self.ram[idx] = if val & 3 == 3 { 0xFF } else { val & 3 },
+                3 => self.ram[idx] = if val & 1 != 0 { 0xFF } else { 0x00 },
+                _ => {}
+            }
+        }
         match idx {
             INTERRUPT_VECTOR_REGISTER => self.dma_clear_disabled = val & 0x01 != 0,
             _ if DMA_ADDR_LO.contains(&idx) || DMA_ADDR_HI.contains(&idx) => {
                 for channel in 0..3 {
                     if idx == DMA_ADDR_LO[channel] || idx == DMA_ADDR_HI[channel] {
-                        self.dma_addr[channel] = u16::from(self.ram[DMA_ADDR_LO[channel]])
-                            | (u16::from(self.ram[DMA_ADDR_HI[channel]]) << 8);
+                        // Bit 0 is ignored and forced to zero (`dmatest`'s "dma channel address (bit 1 set)").
+                        self.dma_addr[channel] = (u16::from(self.ram[DMA_ADDR_LO[channel]])
+                            | (u16::from(self.ram[DMA_ADDR_HI[channel]]) << 8))
+                            & 0xFFFE;
                         self.dma_status &= !(1 << channel);
                     }
                 }
@@ -445,26 +484,24 @@ impl Asic {
         (offset == SOFT_SCROLL_OFFSET).then(|| VideoWrite::HScroll(self.h_scroll()))
     }
 
+    /// DCSR write: a `1` in bits 6-4 clears that channel's interrupt flag
+    /// (channel 0 is bit 6), bits 2-0 enable the channels.
     fn write_dcsr(&mut self, val: u8) {
-        self.dma_status = val;
-        let mut acked = false;
-        for (channel, bit) in [(0usize, 0x40u8), (1, 0x20), (2, 0x10)] {
-            if val & bit != 0 {
-                self.ram[DCSR_REGISTER] &= !bit;
-                acked = true;
-                let _ = channel;
-            }
-        }
-        if acked {
-            self.irq_unacknowledged = false;
-            self.irq_cause = RASTER_IRQ_CAUSE;
-        }
+        self.dma_status = val & 0x07;
+        self.ram[DCSR_REGISTER] &= !(val & 0x70);
         self.ram[DCSR_REGISTER] = (self.ram[DCSR_REGISTER] & 0xF8) | (val & 0x07);
+    }
+
+    /// What DCSR reads: bit 7 the raster interrupt, bits 6-4 the DMA
+    /// interrupt flags, bits 2-0 the channels still running (a STOP clears
+    /// its channel's bit, `dmatest`'s "dma enable test").
+    fn dcsr(&self) -> u8 {
+        (self.ram[DCSR_REGISTER] & 0xF0) | (self.dma_status & 0x07)
     }
 
     /// Fires the Programmable Raster Interrupt. Real hardware always
     /// auto-clears a raster-caused `/INT` on the CPU's own acknowledge
-    /// cycle (unlike a DMA-caused one, see `irq_unacknowledged`'s own doc
+    /// cycle (unlike a DMA-caused one, see `dma_interrupt_line`'s own doc
     /// comment) -- a plain one-shot pulse, matching every other interrupt
     /// source in this codebase.
     pub(crate) fn trigger_raster(&mut self) {
@@ -472,20 +509,56 @@ impl Asic {
     }
 
     fn trigger_dma_interrupt(&mut self, channel: usize) {
-        self.irq_cause = (channel as u8) * 2;
         self.ram[DCSR_REGISTER] |= 0x40 >> channel;
-        self.irq_unacknowledged = self.dma_clear_disabled;
     }
 
-    pub(crate) fn irq_unacknowledged(&self) -> bool {
-        self.irq_unacknowledged
+    /// The DMA side of `/INT`: a level, asserted while any channel's
+    /// interrupt flag (DCSR bits 6-4) is set. `Cpc::step` samples it every
+    /// instruction, so a DMA interrupt raised while the CPU has interrupts
+    /// disabled is taken once it enables them (`dmatest`'s "dma int request
+    /// test" starts its channels under `DI`). The flag goes on an
+    /// acknowledge when IVR bit 0 is `0` (auto clear), otherwise only when
+    /// software writes it back to DCSR -- CPCTech's page advises against
+    /// auto clear, and its reset default is off.
+    pub(crate) fn dma_interrupt_line(&self) -> bool {
+        self.ram[DCSR_REGISTER] & 0x70 != 0
+    }
+
+    /// The highest-priority DMA channel with its interrupt flag set.
+    fn pending_dma_channel(&self) -> Option<usize> {
+        (0..3).find(|&channel| self.ram[DCSR_REGISTER] & (0x40 >> channel) != 0)
+    }
+
+    /// The CPU's interrupt acknowledge (every interrupt mode): a pending DMA
+    /// interrupt is served before the raster one. Records the cause for the
+    /// IM2 vector (`interrupt_vector_byte`, read after this) and, with auto
+    /// clear, clears the channel's flag (`dmatest`'s "dma int request auto
+    /// clear"). Returns whether a DMA interrupt was acknowledged -- then the
+    /// Gate Array's raster request stays up for the next one.
+    pub(crate) fn acknowledge(&mut self) -> bool {
+        if !self.enabled && !self.unlocked_once {
+            return false;
+        }
+        match self.pending_dma_channel() {
+            Some(channel) => {
+                self.irq_cause = (channel as u8) * 2;
+                if !self.dma_clear_disabled {
+                    self.ram[DCSR_REGISTER] &= !(0x40 >> channel);
+                }
+                self.ram[DCSR_REGISTER] &= !0x80;
+                true
+            }
+            None => {
+                self.irq_cause = RASTER_IRQ_CAUSE;
+                self.ram[DCSR_REGISTER] |= 0x80;
+                false
+            }
+        }
     }
 
     /// The byte a real IM2 acknowledge cycle reads from the data bus --
-    /// see `machine::Bus::interrupt_vector_byte`'s own doc comment. Also
-    /// performs the same acknowledge-time bookkeeping real hardware does
-    /// (DCSR status-bit updates), since this is the one point `Cpc::step`
-    /// reliably calls exactly once per real CPU interrupt acceptance.
+    /// see `machine::Bus::interrupt_vector_byte`'s own doc comment. The
+    /// cause comes from `acknowledge`, which the CPU runs first.
     pub(crate) fn interrupt_vector_byte(&mut self) -> u8 {
         if !self.enabled {
             // CPCTech's own page: "when the ASIC advanced features are
@@ -495,21 +568,6 @@ impl Asic {
             // here still uses).
             return 0x00;
         }
-        if self.irq_cause != RASTER_IRQ_CAUSE && self.dma_clear_disabled {
-            // Real, documented hardware bug: with auto-clear disabled,
-            // acknowledging a DMA-caused interrupt does *not* clear the
-            // line -- see `irq_unacknowledged`'s own doc comment. Only
-            // the raster-interrupt status bit is reset here.
-            self.ram[DCSR_REGISTER] &= !0x80;
-            return (self.ram[INTERRUPT_VECTOR_REGISTER] & 0xF8) | self.irq_cause;
-        }
-        if self.irq_cause == RASTER_IRQ_CAUSE {
-            self.ram[DCSR_REGISTER] |= 0x80;
-        } else {
-            self.ram[DCSR_REGISTER] &= !0x80;
-            self.ram[DCSR_REGISTER] &= 0x40 >> (self.irq_cause / 2);
-        }
-        self.irq_unacknowledged = false;
         (self.ram[INTERRUPT_VECTOR_REGISTER] & 0xF8) | self.irq_cause
     }
 
@@ -529,16 +587,23 @@ impl Asic {
         results
     }
 
-    fn step_dma_channel(&mut self, channel: usize, primary_ram: &[u8]) -> DmaResult {
-        if self.dma_addr[channel] & 1 != 0 {
-            self.dma_addr[channel] = self.dma_addr[channel].wrapping_add(1);
+    /// One prescaled pause tick: the pause count goes down every
+    /// `prescale + 1` HSYNCs.
+    fn tick_dma_pause(&mut self, channel: usize) {
+        self.dma_prescaler[channel] = self.dma_prescaler[channel].wrapping_sub(1);
+        if self.dma_prescaler[channel] == 0 {
+            self.dma_pause[channel] -= 1;
+            self.dma_prescaler[channel] = self.ram[DMA_PRESCALER[channel]].wrapping_add(1);
         }
+    }
+
+    /// One HSYNC of one channel. The instruction word's bits 12-14 act
+    /// independently (bit 15 is ignored): `1xxx` PAUSE, `2xxx` REPEAT,
+    /// `4xxx` LOOP/INT/STOP, in any combination; only with all three clear
+    /// is it a LOAD (`dmatest`'s "dma command bit 1/2" tests).
+    fn step_dma_channel(&mut self, channel: usize, primary_ram: &[u8]) -> DmaResult {
         if self.dma_pause[channel] != 0 {
-            self.dma_prescaler[channel] = self.dma_prescaler[channel].wrapping_sub(1);
-            if self.dma_prescaler[channel] == 0 {
-                self.dma_pause[channel] -= 1;
-                self.dma_prescaler[channel] = self.ram[DMA_PRESCALER[channel]].wrapping_add(1);
-            }
+            self.tick_dma_pause(channel);
             return DmaResult::default();
         }
 
@@ -550,36 +615,40 @@ impl Asic {
         let command = u16::from(lo) | (u16::from(hi) << 8);
         let mut result = DmaResult::default();
 
-        match command & 0xF000 {
-            0x0000 => {
-                // LOAD R,D -- load 8-bit data D into PSG register R.
-                let register = ((command & 0x0F00) >> 8) as u8;
-                let data = (command & 0x00FF) as u8;
-                result.psg_load = Some((register, data));
+        let operation = command & 0x7000;
+        if operation == 0 {
+            // LOAD R,D -- load 8-bit data D into PSG register R.
+            let register = ((command & 0x0F00) >> 8) as u8;
+            let data = (command & 0x00FF) as u8;
+            result.psg_load = Some((register, data));
+        }
+        if operation & 0x2000 != 0 {
+            // REPEAT N -- the loop starts after this instruction; the body
+            // runs N times in all (N = 0 runs it once, `dmatest`'s "dma
+            // repeat").
+            self.dma_repeat[channel] = self.dma_addr[channel];
+            self.dma_loopcount[channel] = command & 0x0FFF;
+        }
+        if operation & 0x4000 != 0 {
+            if command & 0x01 != 0 && self.dma_loopcount[channel] > 1 {
+                self.dma_addr[channel] = self.dma_repeat[channel];
+                self.dma_loopcount[channel] -= 1;
             }
-            0x1000 => {
-                // PAUSE N -- pause for N prescaled HSYNC ticks.
-                self.dma_pause[channel] = (command & 0x0FFF).wrapping_sub(1);
+            if command & 0x10 != 0 {
+                self.trigger_dma_interrupt(channel);
+                result.interrupt = true;
             }
-            0x2000 => {
-                // REPEAT N -- mark this instruction as the loop start.
-                self.dma_repeat[channel] = self.dma_addr[channel];
-                self.dma_loopcount[channel] = command & 0x0FFF;
+            if command & 0x20 != 0 {
+                self.dma_status &= !(1 << channel);
             }
-            0x4000 => {
-                if command & 0x01 != 0 && self.dma_loopcount[channel] > 0 {
-                    self.dma_addr[channel] = self.dma_repeat[channel];
-                    self.dma_loopcount[channel] -= 1;
-                }
-                if command & 0x10 != 0 {
-                    self.trigger_dma_interrupt(channel);
-                    result.interrupt = true;
-                }
-                if command & 0x20 != 0 {
-                    self.dma_status &= !(1 << channel);
-                }
-            }
-            _ => {} // 0x3000 (reserved) and any other pattern: no effect, still advances below.
+        }
+        if operation & 0x1000 != 0 && command & 0x0FFF != 0 {
+            // PAUSE N -- the next instruction runs `N * (prescale + 1)` HSYNCs
+            // after this one, which is the first tick; PAUSE 0 is a plain NOP
+            // (`dmatest`'s "dma pause" and "dma prescale reg").
+            self.dma_pause[channel] = command & 0x0FFF;
+            self.dma_prescaler[channel] = self.ram[DMA_PRESCALER[channel]].wrapping_add(1);
+            self.tick_dma_pause(channel);
         }
 
         self.dma_addr[channel] = self.dma_addr[channel].wrapping_add(2);
@@ -641,11 +710,12 @@ mod tests {
     #[test]
     fn rmr2_write_requires_unlock_and_bit5() {
         let mut asic = Asic::new();
-        assert!(!asic.maybe_write_rmr2(0x20));
+        assert!(!asic.maybe_write_rmr2(0xA0));
         unlock(&mut asic);
-        assert!(!asic.maybe_write_rmr2(0x00)); // bit5 clear: classic MRER write
-        assert!(asic.maybe_write_rmr2(0x25));
-        assert_eq!(asic.rmr2(), 0x25);
+        assert!(!asic.maybe_write_rmr2(0x80)); // bit5 clear: classic MRER write
+        assert!(!asic.maybe_write_rmr2(0x25)); // bit 5 set but a pen select, not function 10
+        assert!(asic.maybe_write_rmr2(0xA5));
+        assert_eq!(asic.rmr2(), 0xA5);
     }
 
     #[test]
@@ -709,10 +779,11 @@ mod tests {
         unlock(&mut asic);
         let results = asic.step_dma(&ram);
         assert!(results[0].interrupt);
-        assert!(asic.irq_unacknowledged());
-        // Vector byte reflects DMA channel 0's cause (0) without clearing.
+        assert!(asic.dma_interrupt_line());
+        // The acknowledge serves DMA channel 0 (vector cause 0) without clearing its flag.
+        assert!(asic.acknowledge());
         assert_eq!(asic.interrupt_vector_byte() & 0x07, 0);
-        assert!(asic.irq_unacknowledged());
+        assert!(asic.dma_interrupt_line());
     }
 
     fn dcsr_write_acknowledges_and_clears_held_interrupt() {
@@ -725,9 +796,17 @@ mod tests {
         asic.write_high(0x0C0F, 0x01);
         unlock(&mut asic);
         asic.step_dma(&ram);
-        assert!(asic.irq_unacknowledged());
+        assert!(asic.dma_interrupt_line());
         asic.write_high(0x0C0F, 0x40); // ack DMA0
-        assert!(!asic.irq_unacknowledged());
+        assert!(!asic.dma_interrupt_line());
+        // With auto clear (IVR bit 0 = 0) the acknowledge itself drops it.
+        asic.write_high(0x0805, 0x00);
+        asic.write_high(0x0C0F, 0x01);
+        asic.dma_addr[0] = 0x8000;
+        asic.step_dma(&ram);
+        assert!(asic.dma_interrupt_line());
+        assert!(asic.acknowledge());
+        assert!(!asic.dma_interrupt_line());
     }
     /// Merged (every check kept): `dma_load_command_reports_psg_write`, `dma_int_command_sets_held_interrupt_when_auto_clear_disabled`, `dcsr_write_acknowledges_and_clears_held_interrupt`.
     #[test]

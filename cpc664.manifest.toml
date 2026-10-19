@@ -93,13 +93,11 @@ frames = 700
 more_frames = 100
 args = ["--type-after", "200", "--type-delay", "100", "--type", "print 1234 mod 100\n"]
 
-# ZEsarUX's frame is 79872 T-states (312 lines of 256, measured as 6 interrupts of 13312), the machine's is 80000
-# (4 MHz / 50 Hz). Known gap, see the note.
+# ZEsarUX's frame is 79872 T-states (312 lines of 256, measured as 6 interrupts of 13312), the CRTC frame the firmware
+# programs; closed 2026-10-19 (docs/cpc-timing-gap.md).
 [[scenario]]
 id = "S6"
 kind = "timing"
 frames = 100
 cycles_per_frame = 79872
 cycles_tolerance = 23
-status = "known-gap"
-gap = { reason = "ZEsarUX runs 79872 T-states per frame (13312 between interrupts), retroclawd 80000 (4 MHz / 50 Hz)", evidence = "machines/amstrad/docs/cpc-timing-gap.md" }

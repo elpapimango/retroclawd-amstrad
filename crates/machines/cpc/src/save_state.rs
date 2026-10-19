@@ -251,9 +251,7 @@ mod tests {
         cpc.bus.write_io(0xFB7F, 0x0F); // Seek: no disk, so not ready
         cpc.bus.write_io(0xFB7F, 0x00);
         cpc.bus.write_io(0xFB7F, 0x05);
-        for _ in 0..100 {
-            cpc.step(); // let the (timed) seek finish
-        }
+        cpc.bus.tick_fdc(200_000); // let the (timed) seek finish
         cpc.bus.write_io(0xFB7F, 0x08); // Sense Interrupt Status result pending
 
         let saved = cpc.save_state();
@@ -281,13 +279,13 @@ mod tests {
     }
 
     fn write_sector_via_ports(cpc: &mut Cpc, fill: u8) {
+        use crate::bus::tests::fdc_out;
         cpc.bus.write_io(0xFA7E, 1); // motor on
         for b in [0x45, 0, 0, 0, 0xC1, 2, 0xC1, 0x2A, 0xFF] {
-            cpc.bus.write_io(0xFB7F, b); // Write Data, MFM
+            fdc_out(cpc, b); // Write Data, MFM
         }
-        cpc.bus.read_io(0xFB7E); // the one not-ready poll
         for _ in 0..512 {
-            cpc.bus.write_io(0xFB7F, fill);
+            fdc_out(cpc, fill);
         }
     }
 

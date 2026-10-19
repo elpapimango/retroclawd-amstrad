@@ -22,10 +22,11 @@
 /// half/full) mapped to `0x00`/`0x80`/`0xFF`, the same 3-level
 /// approximation as before, just now with the *correct* per-channel
 /// assignment instead of a structurally-plausible guess. Only 27 of the
-/// 32 possible hardware values are real, documented colors -- the
-/// remaining 5 (`1`, `8`, `9`, `16`, `17`) are unused/undocumented on
-/// real silicon and never legitimately written by real firmware, so
-/// they're filled with black here rather than guessed.
+/// 32 possible hardware values are distinct colors -- the remaining 5
+/// repeat one of them (`1` = `0`, `8` = `5`, `9` = `3`, `16` = `4`,
+/// `17` = `2`): Kevin Thacker's `asictest`, checked on a real 6128 Plus,
+/// reads exactly those colours back from the ASIC palette after each of
+/// these ink writes. (Until 2026-10-19 they were black here.)
 pub const PALETTE: [(u8, u8, u8); 32] = {
     const LEVELS: [u8; 3] = [0x00, 0x80, 0xFF];
     // (hardware number, R level, G level, B level) for each of the 27
@@ -59,12 +60,18 @@ pub const PALETTE: [(u8, u8, u8); 32] = {
         (3, 2, 2, 1),
         (11, 2, 2, 2),
     ];
+    const DUPLICATES: [(usize, usize); 5] = [(1, 0), (8, 5), (9, 3), (16, 4), (17, 2)];
     let mut table = [(0u8, 0u8, 0u8); 32];
     let mut i = 0;
     while i < 27 {
         let (hw, r, g, b) = ENTRIES[i];
         table[hw] = (LEVELS[r as usize], LEVELS[g as usize], LEVELS[b as usize]);
         i += 1;
+    }
+    let mut d = 0;
+    while d < 5 {
+        table[DUPLICATES[d].0] = table[DUPLICATES[d].1];
+        d += 1;
     }
     table
 };
@@ -194,6 +201,15 @@ impl GateArray {
     pub fn acknowledge_interrupt(&mut self) {
         self.interrupt_line = false;
         self.hsync_counter &= 0x1F;
+    }
+
+    /// Drops a pending request without touching the counter -- a CPC
+    /// Plus switching to its programmable raster interrupt (PRI non-zero)
+    /// leaves no classic request behind (`dmatest` sets PRI "to separate
+    /// raster int from our dma ints" and then expects the DMA interrupt
+    /// first).
+    pub(crate) fn cancel_interrupt(&mut self) {
+        self.interrupt_line = false;
     }
 
     /// Marks the CRTC's rising VSYNC edge. The Gate Array waits for two

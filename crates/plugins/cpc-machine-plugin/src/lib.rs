@@ -658,6 +658,7 @@ fn create_machine(req: MachineCreateRequest) -> Result<MachineCreateResponse, St
         }
     }
 
+    let frame_rate = exact_frame_rate(&machine);
     let mut state = state()
         .lock()
         .map_err(|_| "plugin state mutex poisoned".to_string())?;
@@ -684,9 +685,17 @@ fn create_machine(req: MachineCreateRequest) -> Result<MachineCreateResponse, St
             notes: vec!["external machine plugin v1".to_string()],
             bitmap_palette: bitmap_palette(),
             bitmap_defaults: Some(bitmap_defaults()),
+            frame_rate,
             ..MachineMetadata::default()
         },
     })
+}
+
+/// `MachineMetadata::frame_rate`: one CRTC frame exactly (the host paces and
+/// budgets by it instead of the rounded `frame_hz`).
+fn exact_frame_rate(machine: &Cpc) -> (u32, u32) {
+    let rate = Machine::frame_rate(machine);
+    (rate.num, rate.den)
 }
 
 fn media_extension(kind: MediaKind, name: Option<&str>) -> String {
@@ -1653,6 +1662,7 @@ fn handle_debug_command(
             notes: vec!["external machine plugin v1".to_string()],
             bitmap_palette: bitmap_palette(),
             bitmap_defaults: Some(bitmap_defaults()),
+            frame_rate: exact_frame_rate(&record.machine),
             ..MachineMetadata::default()
         })),
     }

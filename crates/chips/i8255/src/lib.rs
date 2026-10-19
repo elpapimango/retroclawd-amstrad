@@ -372,6 +372,12 @@ impl Ppi {
         self.input_b = val;
     }
 
+    /// The Port B pin levels the outside world drives, whatever the port's
+    /// direction (`read_port_b` gives the output latch while it is an output).
+    pub fn input_b(&self) -> u8 {
+        self.input_b
+    }
+
     /// Sets the level of the Port C pins that are inputs (and of /STB and /ACK in the handshake
     /// modes); a falling edge of /STB latches the data and sets IBF, a falling edge of /ACK sets /OBF
     /// high again.

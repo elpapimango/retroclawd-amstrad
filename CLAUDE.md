@@ -18,7 +18,7 @@ The Amstrad CPC machine family of retroclawd, split out of the main repository (
 `cpc464, cpc664 and cpc6128` have `<id>.manifest.toml` files here: the playbook's standard scenarios (S1 boot, S2 typed input, S3 media, S4 audio, S5 state, S6
 timing, S7 hardware test) against ZEsarUX 13.0, run by `rc-scenarios` of `retroclawd-tools` (see the host's `CLAUDE.md` for the command and
 environment). The test media come from `scenarios/cpc/hello.asm` (an rcld layout; the disk is only listed with CAT, `RUN"HELLO` ends in a reset in both emulators); `scenarios/build.sh` builds them into the git-ignored `software/scenarios/`. Goldens are
-not committed. Known gaps are `status = "known-gap"` entries with a note under `docs/`: S6 (`docs/cpc-timing-gap.md`) and the diagnostics' CRTC/FDC lines (`docs/cpc-diag-crtc-fdc-gap.md`).
+not committed. Known gaps are `status = "known-gap"` entries with a note under `docs/`: the diagnostics' CRTC/FDC lines (`docs/cpc-diag-crtc-fdc-gap.md`). S6 (frame length) was closed 2026-10-19: `Machine::frame_rate` reports the firmware's CRTC frame, 79872 T-states (`docs/cpc-timing-gap.md`).
 
 ## Crate notes
 
@@ -47,9 +47,38 @@ The notes below were written in the host repository before the split and refer t
 - **Classic ink writes on a CPC+ (2026-10-16)**: a Plus takes its colours from the ASIC palette (`video_state`), and the Gate Array
   ink write (`OUT (&7Fxx)`, function `01`) used to be dropped there, so every program that sets colours the old way -- every CPC
   program, and the GX4000 diagnostics cartridge -- showed black. `Asic::set_legacy_ink` now writes the 12-bit form of the hardware colour
-  into the pen's palette entry (levels off/half/full become `0`/`8`/`F`, which renders like the classic palette). Unit test
+  into the pen's palette entry (levels off/half/full are `0`/`6`/`F` since 2026-10-19, see "CPC Plus acid fixes"; `8` before). Unit test
   `a_classic_ink_write_sets_the_asic_palette_of_a_plus_model` (mutation-checked). The earlier note that the cartridge "parks in a VSYNC
   wait" was wrong: it ran, with a black screen; it programs the CRTC itself.
+- **FDC timing model (2026-10-19)**: `CpcBus` calls `nec765::Fdc::enable_timing(4 MHz)` instead of `enable_seek_timing`, so
+  the disk turns (see `nec765`'s module doc: 300 rpm, a byte every 32 us, rotational latency, overrun, Read ID/Format timing,
+  stepping seeks at the Specify rate with a PCN per unit and the MSR busy bits, ready-change interrupts, units 2/3 aliasing
+  drives 0/1, the Scan commands). Disk loads now take real time, as on the machine. Port-level unit tests wait for the
+  disk through `bus::tests::fdc_wait_rqm`/`fdc_in`/`fdc_out`; the real-firmware AMSDOS round trip passes unchanged. Kevin
+  Thacker's `fdc_*` programs are the check (see the host `TODO.md`, "Acid suites").
+- **CPC Plus acid fixes (2026-10-19)**: Kevin Thacker's acid programs (`asictest`, `asicfloat`, `asicrom`, `asicppi`,
+  `asic_external_ram`, `dmatest`, `pritest`, `cpctest`; checked by their author on real machines; run by `rc-suite`'s
+  `cpc_acid.rs`) found, all fixed: (1) the ASIC register page was gated behind the lower-ROM-enable bit, so a program
+  started from BASIC read and wrote RAM there -- only the relocated cartridge ROM needs that bit; (2) every Gate Array
+  write with bit 5 set was taken as RMR2 once unlocked -- only function `10` is (`maybe_write_rmr2`); (3) the five
+  duplicate hardware colours (`1`/`8`/`9`/`16`/`17` = `0`/`5`/`3`/`4`/`2`) were black in `gate_array::PALETTE`, on every
+  model; (4) classic ink writes put level `8` into the ASIC palette, the ASIC uses `6`; (5) a Plus's firmware is cartridge
+  pages (0 OS, 1 BASIC, 3 AMSDOS; others `0xFF` from the 48K image): upper selects `&80-&9F` and RMR2's lower bank use them,
+  and `&0000` is RAM while RMR2 moves the lower ROM away; (6) sprite X/Y high bytes read sign-extended (X 10 bits, Y 9 bits)
+  while `+4..+7` of each block read the bytes as written (`coord_latch`); (7) unmapped ASIC addresses and the write-only
+  registers read the last data-bus byte (`last_bus_byte`), the DMA block reads DCSR, DCSR's enable bits show a STOP;
+  (8) `IN` from a Gate Array address writes the last fetched byte to it on the ASIC models; (9) the ASIC's 8255 keeps Port
+  B an input, reads Port C's latch, reads its control port as `&FF` only after a mode set with Port A input, and latches an
+  AY select/write when BDIR/BC1 leave that state (classic models keep the on-entry behaviour); (10) a DMA interrupt is a
+  level (DCSR bits 6-4), acknowledged in every interrupt mode before the raster one, cleared by the acknowledge only with
+  IVR bit 0 = 0 (`Asic::acknowledge`, `dma_interrupt_line`) -- it used to be a one-shot request lost under `DI`, and the
+  auto clear had an inverted mask; (11) DMA opcode bits 12-14 combine (`3xxx`, `7xxx`), bit 15 is ignored, address bit 0
+  is forced to zero, PAUSE N waits N x (prescale + 1) lines from the PAUSE line (0 is a NOP), REPEAT N runs its body N
+  times; (12) PRI compares only the raster counter's low 3 bits and the row counter's low 6, and setting PRI drops a
+  pending classic request; (13) a read of PPI Port B ticks a CRTC clone to the I/O cycle for VSYNC (video advances after
+  each instruction, an `IN r,(C)` samples about 3 us in) -- this one applies to every model. Also: `i8255::Ppi::input_b`,
+  so updating a Port B status bit no longer copies the output latch into the pins. Unit tests `plus_register_page_and_
+  classic_writes`, `plus_rom_pages`, `plus_ppi`, `plus_dma`. Left: see the host `TODO.md` ("Acid suites").
 - **Malformed `.cpr` images (2026-10-16)**: `cpc_cartridge::parse` stays strict; `parse_lenient` (used by the plugin for the creation ROM
   and cartridge attach) repairs the two defects of real images -- a RIFF size field that does not match the file and a last page shorter
   than its chunk header says (zero-filled) -- and reports each repair on stderr. The released `AmstradDiag.cpr` has both (size `0x040C`,
@@ -76,7 +105,7 @@ The notes below were written in the host repository before the split and refer t
   primary RAM regardless of the CPU mapping. CPC664/6128 reuse `nec765` and
   `dsk` behind CPC's loose motor/MSR/data port decode; the controller is
   the full uPD765A described under "FDC rewrite and disk write path" below
-  (instant execution, no overrun, drive 0 only).
+  (timed since 2026-10-19: see "FDC timing model").
   Model-checked internal save states include all RAM, paging, upper-ROM latch,
   disk motor, and FDC phase but exclude externally supplied ROM/disk bytes.
   `z80::Cpu` + private `CpcBus` also contain `crate::gate_array::GateArray`

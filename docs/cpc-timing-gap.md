@@ -1,5 +1,10 @@
 # CPC timing: 80000 against 79872 T-states per frame (S6 known gap)
 
+**Closed 2026-10-19.** `Cpc` reports an exact frame rate of 4 000 000 / 79 872 (50.08 Hz) through
+`Machine::frame_rate` and the plugin's `MachineMetadata::frame_rate`: the frame the firmware programs (R0 = 63, R4 = 38, R9 = 7,
+R5 = 0: 312 lines of 64 us). The host paces and budgets by it. A program that reprograms the CRTC changes the real picture rate
+but not this pacing quantum.
+
 Found 2026-10-18 by the CPC manifests' scenario S6.
 
 ZEsarUX 13.0 (CPC464 and CPC6128 give the same): a breakpoint at the interrupt entry (0038h) over ZRCP, 24 consecutive

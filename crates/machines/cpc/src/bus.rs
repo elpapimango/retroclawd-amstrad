@@ -63,6 +63,12 @@ pub const DEFAULT_TAPE_LEADER_MS: u32 = 2000;
 
 const CLOCK_HZ: u64 = 4_000_000;
 const FRAME_HZ: u64 = 50;
+/// T-states in one frame as the firmware programs the CRTC: R0 = 63 (64
+/// one-microsecond characters per line), R4 = 38 and R9 = 7 (39 rows of 8
+/// lines), R5 = 0 -- 312 lines of 64 us, 19968 us, a 50.08 Hz picture. The
+/// host paces by it (`Machine::frame_rate`); a program that reprograms the
+/// CRTC changes the real picture rate but not this pacing quantum.
+const FRAME_TSTATES: u32 = 312 * 256;
 /// `.cdt`/`.tzx` pulse timings are represented in the same cycle domain
 /// `zx_tape` already uses when parsing blocks (`3_546_900` cycles/second).
 /// Keep CPC->tape conversion in that exact domain to avoid long-run drift.
@@ -219,6 +225,14 @@ pub struct CpcBus {
     /// getter -- needed to know when a PSG "read" function targets
     /// register 14 (the real keyboard-row read-back register on CPC).
     psg_selected_register: u8,
+    /// The last byte on the CPU's data bus (every memory read and write),
+    /// what an unmapped ASIC register address reads (see
+    /// `Asic::read_window`). Transient: not in save states.
+    last_bus_byte: u8,
+    /// What the ASIC's 8255 control port reads (see `read_io`).
+    asic_ppi_control_read: u8,
+    /// BDIR/BC1 as last written (see `psg_lines_changed`).
+    psg_lines: u8,
     /// Port C bits 3:0 -- real keyboard row select (a 74LS145 decoder
     /// picks 1 of 10 real matrix lines, see `crate::keyboard`'s own doc
     /// comment; 4 bits, not 3 -- 10 lines need the full nibble).
@@ -325,7 +339,7 @@ impl CpcBus {
                 // CPC (unlike this crate's other host, zx_spectrum's +3)
                 // drives `tick_fdc` every step, so real bounded
                 // Seek/Recalibrate timing is safe to enable here.
-                fdc.enable_seek_timing();
+                fdc.enable_timing(CLOCK_HZ as u32);
                 fdc
             }),
             pristine_disks: [None, None],
@@ -336,6 +350,9 @@ impl CpcBus {
             tape_leader_ms: DEFAULT_TAPE_LEADER_MS,
             tape_cycle_debt: 0,
             psg_selected_register: 0,
+            last_bus_byte: 0xFF,
+            asic_ppi_control_read: 0x00,
+            psg_lines: 0,
             keyboard_row_select: 0,
             keyboard: crate::keyboard::KeyMatrix::new(),
             memory_reads_total: 0,
@@ -410,7 +427,28 @@ impl CpcBus {
         if self.ppi.control() & 0x08 == 0 && motor_on != self.cassette_motor {
             self.set_cassette_motor(motor_on);
         }
-        self.psg_function(self.ppi.port_c_latch());
+        self.psg_lines_changed(self.ppi.port_c_latch());
+    }
+
+    /// Port C's BDIR/BC1 lines (7:6) were written. A classic CPC performs the
+    /// AY operation as the function is entered. On the ASIC models the AY
+    /// latches a register select or a data write when the lines leave that
+    /// state, with whatever is on Port A then -- `asicppi`'s "ppi write order"
+    /// sets the function first and the data after it and expects the data;
+    /// a read still answers as it is entered.
+    fn psg_lines_changed(&mut self, port_c: u8) {
+        let lines = (port_c >> 6) & 0x03;
+        if self.asic.is_none() {
+            self.psg_function(port_c);
+            return;
+        }
+        let previous = std::mem::replace(&mut self.psg_lines, lines);
+        if previous != lines && previous >= 0b10 {
+            self.psg_function(previous << 6);
+        }
+        if lines == 0b01 {
+            self.psg_function(port_c);
+        }
     }
 
     /// What the AY sees on its data bus: Port A's output latch while the 8255 drives the pins, otherwise
@@ -458,6 +496,39 @@ impl CpcBus {
         }
     }
 
+    /// A write to the Gate Array (pen/ink/mode/ROM, or interrupt reset).
+    /// On a CPC Plus/GX4000 a write with bit 5 set targets RMR2 instead
+    /// once unlocked -- see `asic::Asic::maybe_write_rmr2`'s own doc
+    /// comment.
+    fn gate_array_write(&mut self, val: u8) {
+        let consumed_by_rmr2 = self
+            .asic
+            .as_mut()
+            .is_some_and(|asic| asic.maybe_write_rmr2(val));
+        if consumed_by_rmr2 {
+            return;
+        }
+        self.gate_array.write(val);
+        match val >> 6 {
+            // Ink write. A CPC+ takes its colours from the ASIC
+            // palette (see `video_state`) but still honours the
+            // classic write, which sets that palette entry.
+            0b01 => {
+                let pen = self.gate_array.selected_pen().min(16);
+                let (r, g, b) = match self.asic.as_mut() {
+                    Some(asic) => asic.set_legacy_ink(pen, val),
+                    None => self.gate_array.pen_color(pen),
+                };
+                self.log_video_event(VideoEventKind::Ink {
+                    pen,
+                    rgb: [r, g, b],
+                });
+            }
+            0b10 => self.log_video_event(VideoEventKind::RequestMode(val & 3)),
+            _ => {}
+        }
+    }
+
     /// Pure read with no side effects -- for `Machine::read_memory`.
     pub(crate) fn peek(&self, addr: u16) -> u8 {
         if let Some(byte) = self.asic_rom_overlay(addr) {
@@ -487,44 +558,70 @@ impl CpcBus {
     /// bank to `0x4000` or `0x8000` instead of its default `0x0000`).
     /// Returns `None` when neither applies (including every classic,
     /// non-ASIC model), so the caller falls through to plain RAM/ROM --
-    /// this only ever affects `Model::has_asic()` models. Gated the same
-    /// way real hardware gates it: behind the classic lower-ROM-enable
-    /// bit (see `CREDITS.md`).
+    /// this only ever affects `Model::has_asic()` models. The register
+    /// window depends only on the unlocked ASIC and RMR2; the relocated
+    /// cartridge bank, being the lower ROM, also needs the classic
+    /// lower-ROM-enable bit. Kevin Thacker's `asictest` (checked on a real
+    /// 6128 Plus) reads the registers from a program BASIC started, with
+    /// the lower ROM disabled; this crate gated the window behind that bit
+    /// until 2026-10-19, so those reads went to RAM.
     fn asic_rom_overlay(&self, addr: u16) -> Option<u8> {
         let asic = self.asic.as_ref()?;
-        if self.gate_array.lower_rom_disabled() || !asic.active() {
+        if !asic.active() {
             return None;
         }
         let window = addr / ROM_SIZE as u16;
         let position = asic.rmr2() & 0x18;
         if window == 1 && position == 0x18 {
-            return Some(asic.read_window((addr - 0x4000) as usize));
+            return Some(
+                asic.read_window((addr - 0x4000) as usize)
+                    .unwrap_or(self.last_bus_byte),
+            );
         }
-        if self.cartridge_banks.is_empty() {
+        if self.gate_array.lower_rom_disabled() {
             return None;
         }
-        let bank =
-            &self.cartridge_banks[(asic.rmr2() & 0x07) as usize % self.cartridge_banks.len()];
+        let page = asic.rmr2() & 0x07;
+        let offset = (addr & 0x3FFF) as usize;
         match (window, position) {
-            (0, 0x00) | (0, 0x18) => Some(bank[(addr & 0x3FFF) as usize]),
-            (1, 0x08) => Some(bank[(addr - 0x4000) as usize]),
-            (2, 0x10) => Some(bank[(addr - 0x8000) as usize]),
+            (0, 0x00) | (0, 0x18) | (1, 0x08) | (2, 0x10) => {
+                Some(self.cartridge_page_byte(page, offset))
+            }
+            // The lower ROM moved to `&4000`/`&8000`: `&0000` is RAM.
+            (0, 0x08) | (0, 0x10) => Some(self.ram[self.ram_index(addr)]),
             _ => None,
+        }
+    }
+
+    /// Byte `offset` of cartridge page `page` on a Plus/GX4000. A Plus's
+    /// firmware is a cartridge too: page 0 is the OS (the lower ROM), page 1
+    /// BASIC and page 3 AMSDOS (a 6128 Plus system cartridge); this crate
+    /// holds those three from the classic 48K image, so on an internal-
+    /// firmware model any other page reads `0xFF`. A GX4000 cartridge
+    /// repeats every `len` pages, as the unused address lines leave it.
+    fn cartridge_page_byte(&self, page: u8, offset: usize) -> u8 {
+        if !self.cartridge_banks.is_empty() {
+            return self.cartridge_banks[usize::from(page) % self.cartridge_banks.len()][offset];
+        }
+        match page & 0x1F {
+            0 => self.lower_rom[offset],
+            1 => self.basic_rom[offset],
+            3 => self.amsdos_rom.as_deref().unwrap_or(&self.basic_rom)[offset],
+            _ => 0xFF,
         }
     }
 
     /// Routes a memory write into the ASIC's own register storage when
     /// the ASIC register window is currently visible at `0x4000-0x7FFF`
-    /// (`asic.active() && rmr2 bits 4:3 == 0x18`, gated the same way
-    /// reads are -- see `asic_rom_overlay`'s own doc comment). Returns
+    /// (`asic.active() && rmr2 bits 4:3 == 0x18`, the same condition as
+    /// reads -- see `asic_rom_overlay`'s own doc comment). Returns
     /// whether the write was consumed this way (the caller must not also
     /// write it into system RAM when `true`).
     fn asic_register_write(&mut self, addr: u16, val: u8) -> bool {
-        let lower_rom_disabled = self.gate_array.lower_rom_disabled();
         let Some(asic) = self.asic.as_mut() else {
             return false;
         };
-        if lower_rom_disabled || !asic.active() || (asic.rmr2() & 0x18) != 0x18 {
+        if !asic.active() || (asic.rmr2() & 0x18) != 0x18 {
             return false;
         }
         match addr {
@@ -534,7 +631,11 @@ impl CpcBus {
             }
             0x6000..=0x7FFF => {
                 let offset = (addr - 0x6000) as usize;
+                let pri_was_off = asic.pri() == 0;
                 asic.write_high(offset, val);
+                if pri_was_off && asic.pri() != 0 {
+                    self.gate_array.cancel_interrupt();
+                }
                 let effect = asic.video_effect_of_high_write(offset);
                 match effect {
                     Some(crate::asic::VideoWrite::Ink { pen, rgb }) => {
@@ -639,7 +740,14 @@ impl CpcBus {
             return false;
         }
         let pri = asic.pri();
-        if crtc.vertical_counter() == (pri >> 3) & 0x1F && crtc.raster_counter() == (pri & 0x07) {
+        // Only the raster counter's low three bits and the row counter's low
+        // six are compared, so a character row taller than eight lines
+        // matches every eight and a frame of more than 64 rows matches again
+        // (`pritest`'s "pri repeat (r9>8)": R9 = 31, four per frame; "pri
+        // wrap": 128 rows, two).
+        if crtc.vertical_counter() & 0x3F == (pri >> 3) & 0x1F
+            && crtc.raster_counter() & 0x07 == (pri & 0x07)
+        {
             asic.trigger_raster();
             gate_array.reset_top_bit();
             true
@@ -680,13 +788,13 @@ impl CpcBus {
         Some(results)
     }
 
-    /// Whether a DMA-caused `/INT` is still held asserted, awaiting
-    /// explicit DCSR acknowledgment -- see
-    /// `asic::Asic::irq_unacknowledged`'s own doc comment.
+    /// Whether the DMA side of `/INT` is asserted (a channel's interrupt flag
+    /// is set) -- see
+    /// `asic::Asic::dma_interrupt_line`'s own doc comment.
     fn asic_irq_held(&self) -> bool {
         self.asic
             .as_ref()
-            .is_some_and(crate::asic::Asic::irq_unacknowledged)
+            .is_some_and(crate::asic::Asic::dma_interrupt_line)
     }
 
     /// Upper ROM (`0xC000-0xFFFF`) source byte at `offset` (already
@@ -696,6 +804,12 @@ impl CpcBus {
     /// classic `selected_upper_rom`) for GX4000, or the classic BASIC/
     /// AMSDOS selection for every other model.
     fn selected_upper_rom_byte(&self, offset: usize) -> u8 {
+        // On the ASIC models an upper-ROM select of `&80-&9F` maps cartridge
+        // page `n & 0x1F` (`asictest`'s "CPC mode set" reads page 0 through
+        // `&DF80` and compares it with the lower ROM).
+        if self.asic.is_some() && self.upper_rom_select & 0x80 != 0 {
+            return self.cartridge_page_byte(self.upper_rom_select & 0x1F, offset);
+        }
         if self.cartridge_banks.is_empty() {
             return self.selected_upper_rom()[offset];
         }
@@ -1267,7 +1381,7 @@ impl CpcBus {
     /// Advances real Seek/Recalibrate timing on the FDC (see
     /// `nec765::Fdc::tick`'s own doc comment) -- a no-op on models
     /// without an FDC.
-    fn tick_fdc(&mut self, cycles: u32) {
+    pub(crate) fn tick_fdc(&mut self, cycles: u32) {
         if let Some(fdc) = &mut self.fdc {
             fdc.tick(cycles);
         }
@@ -1377,6 +1491,7 @@ impl CpcBus {
         let old_motor_latch = (old_port_c & 0x10) != 0;
 
         self.ppi.write_control(val);
+        self.asic_ppi_control_read = if val & 0x90 == 0x90 { 0xFF } else { 0x00 };
 
         let port_c = self.ppi.read_port_c();
         let new_motor_latch = (port_c & 0x10) != 0;
@@ -1410,7 +1525,7 @@ impl CpcBus {
             }
             if bit >= 6 {
                 // BDIR/BC1 moved by bit set/reset: the AY sees the new function like after a Port C write.
-                self.psg_function(self.ppi.port_c_latch());
+                self.psg_lines_changed(self.ppi.port_c_latch());
             }
             if bit == 4 {
                 self.tape_control_writes = self.tape_control_writes.saturating_add(1);
@@ -1438,9 +1553,15 @@ impl CpcBus {
         // input) come from the live input latch state.
         let mut value = self.ppi.read_port_b();
         if self.ppi.control() & 0x02 == 0 {
-            // Port B configured as output: the 8255 drives the pins, so a read gives the latch back (the
-            // CPC acid test "port b output latch r/w").
-            return value;
+            if self.asic.is_some() {
+                // The ASIC's 8255 keeps Port B an input whatever the control word says (`asicppi`'s "port b output
+                // latch r/w" expects the input-mode value back, and waits for VSYNC on bit 0 with Port B "output").
+                value = self.ppi.input_b();
+            } else {
+                // Port B configured as output: the 8255 drives the pins, so a read gives the latch back (the
+                // CPC acid test "port b output latch r/w").
+                return value;
+            }
         }
         value |= CPC_PORT_B_FIXED_HIGH_MASK;
         value &= !CPC_PORT_B_FIXED_LOW_MASK;
@@ -1448,7 +1569,7 @@ impl CpcBus {
     }
 
     fn set_port_b_status_bit(&mut self, bit: u8, active: bool) {
-        let mut input = self.ppi.read_port_b();
+        let mut input = self.ppi.input_b();
         let mask = 1 << bit;
         if active {
             input |= mask;
@@ -1588,7 +1709,9 @@ impl Bus for CpcBus {
     }
     fn read(&mut self, addr: u16) -> u8 {
         self.record_memory_read(addr);
-        self.peek(addr)
+        let value = self.peek(addr);
+        self.last_bus_byte = value;
+        value
     }
 
     /// RAM is always written underneath ROM overlays. On the 6128 the live
@@ -1599,6 +1722,7 @@ impl Bus for CpcBus {
     /// own doc comment), not in system RAM.
     fn write(&mut self, addr: u16, val: u8) {
         self.record_memory_write(addr);
+        self.last_bus_byte = val;
         if self.asic_register_write(addr, val) {
             return;
         }
@@ -1611,35 +1735,9 @@ impl Bus for CpcBus {
     fn write_io(&mut self, port: u16, val: u8) {
         self.io_writes_total = self.io_writes_total.saturating_add(1);
 
-        // Gate Array: A15=0, A14=1. On a CPC Plus/GX4000, a write with
-        // bit 5 set targets RMR2 instead once unlocked -- see
-        // `asic::Asic::maybe_write_rmr2`'s own doc comment.
+        // Gate Array: A15=0, A14=1.
         if port & 0xC000 == 0x4000 {
-            let consumed_by_rmr2 = self
-                .asic
-                .as_mut()
-                .is_some_and(|asic| asic.maybe_write_rmr2(val));
-            if !consumed_by_rmr2 {
-                self.gate_array.write(val);
-                match val >> 6 {
-                    // Ink write. A CPC+ takes its colours from the ASIC
-                    // palette (see `video_state`) but still honours the
-                    // classic write, which sets that palette entry.
-                    0b01 => {
-                        let pen = self.gate_array.selected_pen().min(16);
-                        let (r, g, b) = match self.asic.as_mut() {
-                            Some(asic) => asic.set_legacy_ink(pen, val),
-                            None => self.gate_array.pen_color(pen),
-                        };
-                        self.log_video_event(VideoEventKind::Ink {
-                            pen,
-                            rgb: [r, g, b],
-                        });
-                    }
-                    0b10 => self.log_video_event(VideoEventKind::RequestMode(val & 3)),
-                    _ => {}
-                }
-            }
+            self.gate_array_write(val);
         }
         // CPC6128 paging PAL: A15=0 and Gate Array function 11.
         if port & 0x8000 == 0 && val >> 6 == 0b11 {
@@ -1668,7 +1766,9 @@ impl Bus for CpcBus {
         // PPI: A11=0; A9:A8 select A/B/C/control.
         if port & 0x0800 == 0 {
             match port & 0x0300 {
-                0x0000 => self.ppi.write_port_a(val),
+                0x0000 => {
+                    self.ppi.write_port_a(val);
+                }
                 0x0100 => self.ppi.write_port_b(val),
                 0x0200 => self.write_port_c(val),
                 0x0300 => self.write_ppi_control(val),
@@ -1699,6 +1799,19 @@ impl Bus for CpcBus {
 
     fn read_io(&mut self, port: u16) -> u8 {
         self.io_reads_total = self.io_reads_total.saturating_add(1);
+        // CPC Plus/GX4000: an IN from a Gate Array address writes the byte on
+        // the data bus -- the last one the CPU fetched -- to the Gate Array
+        // and the paging register, as an OUT would (`asictest`'s "IN set
+        // colour": `IN A,(C)`, `ED 78`, sets ink `&78`; `IN A,(&4n)` sets
+        // `&4n`). The classic Gate Array's version of this differs between
+        // revisions and is not modelled.
+        if self.asic.is_some() && port & 0xC000 == 0x4000 {
+            let val = self.last_bus_byte;
+            self.gate_array_write(val);
+            if val >> 6 == 0b11 {
+                self.select_ram_configuration(val);
+            }
+        }
         let mut data = 0xFF;
         // CRTC reads: A14=0; A9:A8 = 10 is the status register (`&BExx`),
         // 11 the register read (`&BFxx`). Which registers answer, and what
@@ -1715,9 +1828,25 @@ impl Bus for CpcBus {
                 0x0000 => self.ppi.read_port_a_clearing(),
                 0x0100 => {
                     self.tape_port_reads = self.tape_port_reads.saturating_add(1);
+                    // VSYNC as it is at this I/O cycle, not as it was when the
+                    // instruction began: video advances after each
+                    // instruction, and an `IN r,(C)` samples about 3 us in
+                    // (`cpctest`'s "CPC int (HSYNC pos/width)" read the end of
+                    // VSYNC between two reads 4 us apart).
+                    let mut crtc = self.crtc.clone();
+                    crtc.tick_with(self.instruction_advanced_tstates, |_| {});
+                    if crtc.vsync() != self.crtc.vsync() {
+                        self.set_vsync_input(crtc.vsync());
+                    }
                     self.ppi_port_b_read_value()
                 }
+                // The ASIC's 8255 has an output-only Port C and a control
+                // port that reads `&FF` only after a mode set with Port A as
+                // input, else `0` (`asicppi`'s "port c read", "port c mixed
+                // input/output" and "ppi control r/w").
+                0x0200 if self.asic.is_some() => self.ppi.port_c_latch(),
                 0x0200 => self.ppi.read_port_c(),
+                0x0300 if self.asic.is_some() => self.asic_ppi_control_read,
                 _ => data,
             };
         }
@@ -1754,7 +1883,16 @@ impl Bus for CpcBus {
 
     /// The Gate Array drops `/INT` and clears bit 5 of its counter when the
     /// Z80 acknowledges the interrupt (see `GateArray::acknowledge_interrupt`).
+    /// A CPC Plus/GX4000 serves a pending DMA interrupt first (see
+    /// `Asic::acknowledge`); the Gate Array's request then stays up.
     fn interrupt_acknowledged(&mut self) {
+        if self
+            .asic
+            .as_mut()
+            .is_some_and(crate::asic::Asic::acknowledge)
+        {
+            return;
+        }
         self.gate_array.acknowledge_interrupt();
     }
 }
@@ -2285,6 +2423,13 @@ impl Machine for Cpc {
         FRAME_HZ
     }
 
+    fn frame_rate(&self) -> machine::FrameRate {
+        machine::FrameRate {
+            num: CLOCK_HZ as u32,
+            den: FRAME_TSTATES,
+        }
+    }
+
     fn run(&mut self, running: &mut dyn FnMut(&dyn Machine) -> bool) -> RunStats {
         machine::Clock::new(self.frame_hz()).run(self, running)
     }
@@ -2332,10 +2477,10 @@ impl Machine for Cpc {
         self.bus.tick_tape(cycles);
         self.bus.tick_fdc(cycles);
 
-        // CPC Plus/GX4000: a DMA-caused interrupt left unacknowledged
+        // CPC Plus/GX4000: a DMA interrupt flag left set
         // stays asserted -- real hardware samples `/INT` every
         // instruction, not just at HSYNC (see
-        // `asic::Asic::irq_unacknowledged`'s own doc comment).
+        // `asic::Asic::dma_interrupt_line`'s own doc comment).
         if self.bus.asic_irq_held() {
             self.cpu.request_interrupt();
         }
@@ -2462,7 +2607,7 @@ impl Machine for Cpc {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A tape from the (uncommitted) `software/cpc` folder, or `None` -- with a
@@ -2705,6 +2850,32 @@ mod tests {
         dsk::parse(&bytes).unwrap()
     }
 
+    /// Lets the disk turn until the controller raises RQM (the CPC's FDC is timed: a command waits for its sector,
+    /// then moves one byte every 32 us); returns the main status register.
+    pub(crate) fn fdc_wait_rqm(cpc: &mut Cpc) -> u8 {
+        for _ in 0..1_000_000 {
+            let msr = cpc.bus.read_io(0xFB7E);
+            if msr & 0x80 != 0 {
+                return msr;
+            }
+            cpc.bus.tick_fdc(4);
+        }
+        panic!("the FDC never asked for or offered a byte");
+    }
+
+    pub(crate) fn fdc_in(cpc: &mut Cpc) -> u8 {
+        fdc_wait_rqm(cpc);
+        let byte = cpc.bus.read_io(0xFB7F);
+        cpc.bus.tick_fdc(16);
+        byte
+    }
+
+    pub(crate) fn fdc_out(cpc: &mut Cpc, byte: u8) {
+        fdc_wait_rqm(cpc);
+        cpc.bus.write_io(0xFB7F, byte);
+        cpc.bus.tick_fdc(16);
+    }
+
     fn parsed_dsk_sector_reads_through_cpc_fdc_ports() {
         assert!(test_cpc().load_disk(one_sector_dsk(0x5A)).is_err());
         let mut cpc = test_cpc_model(Model::Cpc6128);
@@ -2715,16 +2886,20 @@ mod tests {
             cpc.bus.write_io(0xFB7F, byte);
         }
 
-        assert_eq!(cpc.bus.read_io(0xFB7E), 0x10, "first poll: not ready yet");
         assert_eq!(
             cpc.bus.read_io(0xFB7E),
+            0x30,
+            "waiting for the sector: busy, execution, no RQM"
+        );
+        assert_eq!(
+            fdc_wait_rqm(&mut cpc),
             0xF0,
             "execution phase, controller -> CPU"
         );
         for _ in 0..512 {
-            assert_eq!(cpc.bus.read_io(0xFB7F), 0x5A);
+            assert_eq!(fdc_in(&mut cpc), 0x5A);
         }
-        assert_eq!(cpc.bus.read_io(0xFB7E), 0xD0, "result phase");
+        assert_eq!(fdc_wait_rqm(&mut cpc), 0xD0, "result phase");
         let result: Vec<u8> = (0..7).map(|_| cpc.bus.read_io(0xFB7F)).collect();
         // No terminal-count line on a CPC: end-of-cylinder is the normal end.
         assert_eq!(result, [0x40, 0x80, 0, 0, 0, 1, 2]);
@@ -2774,14 +2949,14 @@ mod tests {
 
         let read_one_sector = |cpc: &mut Cpc| -> u8 {
             for byte in [0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x2A, 0xFF] {
-                cpc.bus.write_io(0xFB7F, byte);
+                fdc_out(cpc, byte);
             }
-            let first_byte = cpc.bus.read_io(0xFB7F);
+            let first_byte = fdc_in(cpc);
             for _ in 1..256 {
-                cpc.bus.read_io(0xFB7F);
+                fdc_in(cpc);
             }
             for _ in 0..7 {
-                cpc.bus.read_io(0xFB7F);
+                fdc_in(cpc);
             }
             first_byte
         };
@@ -2804,13 +2979,13 @@ mod tests {
         // Write a sector to drive B only (Write Data, unit 1).
         cpc.bus.write_io(0xFA7E, 1);
         for byte in [0x45, 0x01, 0x00, 0x00, 0x01, 0x02, 0x01, 0x2A, 0xFF] {
-            cpc.bus.write_io(0xFB7F, byte);
+            fdc_out(&mut cpc, byte);
         }
         for _ in 0..512 {
-            cpc.bus.write_io(0xFB7F, 0x99);
+            fdc_out(&mut cpc, 0x99);
         }
         for _ in 0..7 {
-            cpc.bus.read_io(0xFB7F);
+            fdc_in(&mut cpc);
         }
         assert!(
             cpc.take_modified_disk_image_of(1).is_some(),
@@ -4148,7 +4323,7 @@ mod tests {
         // ADC0 lives at real address &6808 -- 0x2808 relative to &4000.
         assert_eq!(
             cpc.bus.asic.as_ref().unwrap().read_window(0x2808),
-            ANALOG_MAX
+            Some(ANALOG_MAX)
         );
     }
 
@@ -4389,10 +4564,10 @@ mod tests {
                 test_cpc_cartridge(model, 1)
             };
             cpc.bus.write_io(0x7F00, 0x01); // select pen 1
-            cpc.bus.write_io(0x7F00, 0x40 | 4); // hardware colour 4: blue (level 1 of B)
+            cpc.bus.write_io(0x7F00, 0x40 | 4); // hardware colour 4: blue (level 1 of B, ASIC level 6)
             assert_eq!(
                 cpc.bus.video_state().inks[1],
-                [0x00, 0x00, 0x88],
+                [0x00, 0x00, 0x66],
                 "{model:?}"
             );
             cpc.bus.write_io(0x7F00, 0x10); // the border
@@ -4403,5 +4578,119 @@ mod tests {
                 "{model:?}"
             );
         }
+    }
+
+    /// The register page and the palette as Kevin Thacker's `asictest` reads them on a real 6128 Plus.
+    #[test]
+    fn plus_register_page_and_classic_writes() {
+        let mut cpc = test_cpc_model(Model::Cpc6128Plus);
+        // The register page is visible with the lower ROM disabled (a program started from BASIC).
+        cpc.bus.gate_array.write(0x84);
+        open_plus_window(&mut cpc);
+        cpc.bus.write_io(0x7F00, 0x00); // pen 0
+        cpc.bus.write_io(0x7F00, 0x40); // hardware colour 0: &0666
+        assert_eq!((cpc.bus.peek(0x6400), cpc.bus.peek(0x6401)), (0x66, 0x06));
+        // A duplicate hardware colour is its twin (0x50 = 0x44: &0006), not black.
+        cpc.bus.write_io(0x7F00, 0x50);
+        assert_eq!((cpc.bus.peek(0x6400), cpc.bus.peek(0x6401)), (0x06, 0x00));
+        // Bit 5 set on a pen select or an ink write is not RMR2: the window stays.
+        cpc.bus.write_io(0x7F00, 0x21); // pen 1
+        cpc.bus.write_io(0x7F00, 0x6C); // ink 0x0C: &00F0
+        assert_eq!((cpc.bus.peek(0x6402), cpc.bus.peek(0x6403)), (0xF0, 0x00));
+        // An IN from the Gate Array writes the last fetched byte (here 0x4C, bright red) to it.
+        cpc.bus.write_io(0x7F00, 0x02); // pen 2
+        cpc.bus.last_bus_byte = 0x4C;
+        cpc.bus.read_io(0x7F00);
+        assert_eq!((cpc.bus.peek(0x6404), cpc.bus.peek(0x6405)), (0xF0, 0x00));
+        // Sprite Y is 9 bits: the high byte reads sign-extended, the +6/+7 mirror as written.
+        cpc.bus.write(0x6002, 0x00);
+        cpc.bus.write(0x6003, 0x01);
+        assert_eq!(cpc.bus.peek(0x6003), 0xFF);
+        assert_eq!((cpc.bus.peek(0x6006), cpc.bus.peek(0x6007)), (0x00, 0x01));
+        // Unmapped addresses read the floating bus; the DMA block reads DCSR.
+        cpc.bus.last_bus_byte = 0x50;
+        assert_eq!(cpc.bus.peek(0x5000), 0x50);
+        assert_eq!(cpc.bus.peek(0x6C00), cpc.bus.peek(0x6C0F));
+    }
+
+    /// RMR2 relocates the lower ROM as a cartridge page; upper selects &80+ pick pages too.
+    #[test]
+    fn plus_rom_pages() {
+        let mut cpc = test_cpc_model(Model::Cpc6128Plus);
+        cpc.bus.ram[0x1000] = 0x11;
+        unlock_asic(&mut cpc);
+        cpc.bus.gate_array.write(0x80); // both ROMs enabled
+        cpc.bus.write_io(0x7F00, 0xA8); // RMR2: page 0 at &4000
+        assert_eq!(cpc.bus.peek(0x5000), 0xAA, "the OS at &4000");
+        assert_eq!(cpc.bus.peek(0x1000), 0x11, "RAM at &0000");
+        cpc.bus.write_io(0x7F00, 0xA0);
+        cpc.bus.write_io(0xDF00, 0x80); // upper select &80: page 0
+        assert_eq!(cpc.bus.peek(0xD000), 0xAA);
+        cpc.bus.write_io(0xDF00, 0x83); // page 3: AMSDOS
+        assert_eq!(cpc.bus.peek(0xD000), 0xCC);
+    }
+
+    /// The ASIC's 8255: Port B stays an input, Port C reads its latch, a Port A write reaches the AY while
+    /// BDIR/BC1 hold it in "write".
+    #[test]
+    fn plus_ppi() {
+        let mut cpc = test_cpc_model(Model::Cpc6128Plus);
+        cpc.bus.write_io(0xF700, 0x80); // every port an output
+        cpc.bus.set_vsync_input(true);
+        assert_eq!(cpc.bus.read_io(0xF500) & 1, 1, "VSYNC still readable");
+        cpc.bus.write_io(0xF600, 0x12);
+        assert_eq!(cpc.bus.read_io(0xF600), 0x12);
+        cpc.bus.write_io(0xF400, 0x00);
+        cpc.bus.write_io(0xF600, 0xC0); // select
+        cpc.bus.write_io(0xF600, 0x00);
+        cpc.bus.write_io(0xF600, 0x80); // write, then the data
+        cpc.bus.write_io(0xF400, 0x33);
+        cpc.bus.write_io(0xF600, 0x00);
+        assert_eq!(cpc.bus.ay.selected_register(), 0);
+        assert_eq!(cpc.bus.ay.read(), 0x33);
+    }
+
+    /// DMA: STOP shows in DCSR, PAUSE N waits N lines (0 is a NOP), REPEAT N runs its body N times, and an
+    /// interrupt flag is a level that an auto-clearing acknowledge drops.
+    #[test]
+    fn plus_dma() {
+        let mut cpc = test_cpc_model(Model::Cpc6128Plus);
+        open_plus_window(&mut cpc);
+        let program = |cpc: &mut Cpc, words: &[u16]| {
+            for (i, w) in words.iter().enumerate() {
+                cpc.bus.ram[0x1000 + 2 * i] = *w as u8;
+                cpc.bus.ram[0x1001 + 2 * i] = (*w >> 8) as u8;
+            }
+            cpc.bus.write(0x6C00, 0x01); // bit 0 is ignored
+            cpc.bus.write(0x6C01, 0x10);
+            cpc.bus.write(0x6C02, 0x00);
+            cpc.bus.write(0x6C0F, 0x01);
+        };
+        let lines_to_stop = |cpc: &mut Cpc| {
+            (1..1000)
+                .find(|_| {
+                    cpc.bus.step_asic_dma();
+                    cpc.bus.peek(0x6C0F) & 1 == 0
+                })
+                .unwrap()
+        };
+        program(&mut cpc, &[0x1003, 0x4020]);
+        assert_eq!(lines_to_stop(&mut cpc), 4, "PAUSE 3, then STOP");
+        program(&mut cpc, &[0x1000, 0x4020]);
+        assert_eq!(lines_to_stop(&mut cpc), 2, "PAUSE 0 is a NOP");
+        program(&mut cpc, &[0x2003, 0x0000, 0x4001, 0x4020]);
+        assert_eq!(
+            lines_to_stop(&mut cpc),
+            8,
+            "REPEAT, three passes of LOAD and LOOP, STOP"
+        );
+
+        // INT with auto clear (IVR bit 0 = 0): the acknowledge drops the flag.
+        cpc.bus.write(0x6805, 0x00);
+        program(&mut cpc, &[0x4030]);
+        cpc.bus.step_asic_dma();
+        assert!(cpc.bus.asic_irq_held());
+        cpc.bus.interrupt_acknowledged();
+        assert!(!cpc.bus.asic_irq_held());
     }
 }
