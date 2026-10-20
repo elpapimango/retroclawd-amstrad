@@ -18,7 +18,7 @@ The Amstrad CPC machine family of retroclawd, split out of the main repository (
 `cpc464, cpc664 and cpc6128` have `<id>.manifest.toml` files here: the playbook's standard scenarios (S1 boot, S2 typed input, S3 media, S4 audio, S5 state, S6
 timing, S7 hardware test) against ZEsarUX 13.0, run by `rc-scenarios` of `retroclawd-tools` (see the host's `CLAUDE.md` for the command and
 environment). The test media come from `scenarios/cpc/hello.asm` (an rcld layout; the disk is only listed with CAT, `RUN"HELLO` ends in a reset in both emulators); `scenarios/build.sh` builds them into the git-ignored `software/scenarios/`. Goldens are
-not committed. Known gaps are `status = "known-gap"` entries with a note under `docs/`: the diagnostics' CRTC/FDC lines (`docs/cpc-diag-crtc-fdc-gap.md`). S6 (frame length) was closed 2026-10-19: `Machine::frame_rate` reports the firmware's CRTC frame, 79872 T-states (`docs/cpc-timing-gap.md`).
+not committed. Known gaps are `status = "known-gap"` entries with a note under `docs/`; none is open. The diagnostics' CRTC/FDC lines (S7-hw) are compared with Caprice32 since 2026-10-19, ZEsarUX's answer there being wrong (`docs/cpc-diag-crtc-fdc-gap.md`). S6 (frame length) was closed 2026-10-19: `Machine::frame_rate` reports the firmware's CRTC frame, 79872 T-states (`docs/cpc-timing-gap.md`).
 
 ## Crate notes
 
@@ -67,6 +67,12 @@ The notes below were written in the host repository before the split and refer t
   `nec765` gained DMA mode (Specify `ND` = 0; see its module doc): no `EXM`/`RQM` in the execution phase, a read ends
   with ST1/ST2 data error (the 6128's `/DACK` resistor), a write ends normally, Read ID still shows `EXM` while reading
   the ID field. Acid results in the host `TODO.md` ("Acid suites").
+- **More acid fixes (2026-10-19, last)**: writing a non-zero PRI line drops a raster request already pending (not
+  only when PRI was off: `dmatest` sets PRI after its PRI line has passed under `DI` and expects the DMA interrupt
+  first); a DMA prescale write ends the pause unit in progress there and then, the rest take the new rate ("dma
+  pause (change prescale lower/higher)"). With `nec765`'s first step pulse going out at once, `fdc_seek` passes 33.
+  Tried and reverted (made other cases worse; notes in the acid baseline): an HSYNC restarting on its last
+  character without an edge (`dmatest` "CRTC R0 length"), and one shared step clock for overlapped seeks.
 - **CPC Plus acid fixes (2026-10-19)**: Kevin Thacker's acid programs (`asictest`, `asicfloat`, `asicrom`, `asicppi`,
   `asic_external_ram`, `dmatest`, `pritest`, `cpctest`; checked by their author on real machines; run by `rc-suite`'s
   `cpc_acid.rs`) found, all fixed: (1) the ASIC register page was gated behind the lower-ROM-enable bit, so a program

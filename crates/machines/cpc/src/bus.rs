@@ -631,9 +631,12 @@ impl CpcBus {
             }
             0x6000..=0x7FFF => {
                 let offset = (addr - 0x6000) as usize;
-                let pri_was_off = asic.pri() == 0;
                 asic.write_high(offset, val);
-                if pri_was_off && asic.pri() != 0 {
+                // Setting a PRI line drops a raster request already pending, a
+                // classic one or an earlier PRI's (`dmatest` sets PRI "to separate
+                // raster int from our dma ints" after its PRI line has passed under
+                // DI, and then expects the DMA interrupt first).
+                if offset == 0x0800 && val != 0 {
                     self.gate_array.cancel_interrupt();
                 }
                 let effect = asic.video_effect_of_high_write(offset);
@@ -4698,5 +4701,44 @@ pub(crate) mod tests {
         assert!(cpc.bus.asic_irq_held());
         cpc.bus.interrupt_acknowledged();
         assert!(!cpc.bus.asic_irq_held());
+    }
+
+    /// A prescale write ends the pause unit in progress; the rest take the new rate.
+    #[test]
+    fn a_prescale_write_ends_the_pause_unit_in_progress() {
+        let mut cpc = test_cpc_model(Model::Cpc6128Plus);
+        open_plus_window(&mut cpc);
+        // PAUSE 10, STOP at prescale 4 (5 lines a unit).
+        for (i, w) in [0x100Au16, 0x4020].iter().enumerate() {
+            cpc.bus.ram[0x1000 + 2 * i] = *w as u8;
+            cpc.bus.ram[0x1001 + 2 * i] = (*w >> 8) as u8;
+        }
+        cpc.bus.write(0x6C00, 0x00);
+        cpc.bus.write(0x6C01, 0x10);
+        cpc.bus.write(0x6C02, 4);
+        cpc.bus.write(0x6C0F, 0x01);
+        for _ in 0..3 {
+            cpc.bus.step_asic_dma(); // the PAUSE line and two more: inside the first unit
+        }
+        cpc.bus.write(0x6C02, 0); // 1 line a unit from here; the first unit ends now
+        let lines = (1..100)
+            .find(|_| {
+                cpc.bus.step_asic_dma();
+                cpc.bus.peek(0x6C0F) & 1 == 0
+            })
+            .unwrap();
+        assert_eq!(lines, 10, "nine units of one line, then STOP");
+    }
+
+    /// Setting a PRI line drops a raster request already pending, even when PRI was already on.
+    #[test]
+    fn setting_pri_drops_a_pending_raster_request() {
+        let mut cpc = test_cpc_model(Model::Cpc6128Plus);
+        open_plus_window(&mut cpc);
+        cpc.bus.write(0x6800, 100);
+        cpc.bus.gate_array.assert_interrupt();
+        assert!(cpc.bus.gate_array.interrupt_line());
+        cpc.bus.write(0x6800, 100);
+        assert!(!cpc.bus.gate_array.interrupt_line());
     }
 }

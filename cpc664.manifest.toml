@@ -53,7 +53,7 @@ audio = { from_s = 12.0, to_s = 16.0, tone_hz = 260.4, tone_tolerance_pct = 1.0,
 
 # S7: Lyle Llopis' amstrad-diagnostics v1.3 (MIT) from its disk: RUN"DIAG shows the menu after its lower RAM test. The reference
 # is ZEsarUX 13.0 with the same disk, 28 s in. The picture is compared in two parts, the system info and the test results; the
-# CRTC and FDC lines between them are a known gap (S7-hw), where the reference reports a CRTC type 4 and no FDC.
+# CRTC and FDC lines between them are S7-hw, compared with Caprice32 (ZEsarUX reports a CRTC type 4 and no FDC there).
 [[scenario]]
 id = "S7"
 kind = "screen"
@@ -74,17 +74,19 @@ golden = "cpc664/S7-diag.png"
 golden_sha256 = "979938cabef58bd76a36e6848aaa80649f578331349aa7946b462f1f30e579e5"
 compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.46, 0.95, 0.68], reason = "another emulator's rasteriser; the crop is the TEST RESULTS block: LOWER RAM PASSED, the others untested" }
 
+# S7-hw: the CRTC and FDC lines of the same screen. ZEsarUX reports CRTC 04 (the ASIC's type) and FDC NONE with the disk it
+# loaded from in the drive, so this one is compared with Caprice32 4.6 instead (docs/cpc-diag-crtc-fdc-gap.md): its CRTC
+# answers as a type 0, so ours runs with --crtc-type 0. Golden: retroclawd-tools/scripts/capture_caprice_screen.py 1 1250
+# OUT.png --keys 'run"diag' -O system.ram_size=64 AmstradDiag.dsk
 [[scenario]]
 id = "S7-hw"
 kind = "screen"
 frames = 1400
-args = ["--type-after", "150", "--type-delay", "80", "--type", "RUN\"DIAG\n"]
+args = ["--crtc-type", "0", "--type-after", "150", "--type-delay", "80", "--type", "RUN\"DIAG\n"]
 files = { disk = "amstrad/software/diagnostics/AmstradDiag.dsk" }
-golden = "cpc664/S7-diag.png"
-golden_sha256 = "979938cabef58bd76a36e6848aaa80649f578331349aa7946b462f1f30e579e5"
-compare = { mode = "similarity", max_mad = 1.0, crop = [0.05, 0.385, 0.95, 0.44], reason = "another emulator's rasteriser; the crop is the CRTC and FDC lines" }
-status = "known-gap"
-gap = { reason = "the diagnostics read the CRTC type and probe the FDC: ZEsarUX answers CRTC 04 (the ASIC's type) and FDC NONE on a CPC664 with a disk in the drive, retroclawd CRTC 00 and FDC DETECTED; the reference looks wrong on both, but nothing here shows which CRTC type the real machine had", evidence = "machines/amstrad/docs/cpc-diag-crtc-fdc-gap.md" }
+golden = "cpc664/S7-hw-cap32.png"
+golden_sha256 = "2177b8093a10eb1354b018c1031adde8c0f32ba8f30f4d513f93c7074f6822b0"
+compare = { mode = "similarity", max_mad = 1.0, crop = [0.29, 0.385, 0.44, 0.44], golden_crop = [0.29, 0.3996, 0.44, 0.4582], reason = "another emulator's rasteriser; the crop is the values of the CRTC and FDC lines (00, DETECTED); Caprice32's 768x540 picture sits 6 lines higher than ours (768x576), so its crop is the same lines in its frame" }
 
 [[scenario]]
 id = "S5"

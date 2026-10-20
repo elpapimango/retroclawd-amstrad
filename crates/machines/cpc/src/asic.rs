@@ -458,6 +458,14 @@ impl Asic {
             _ if DMA_PRESCALER.contains(&idx) => {
                 for (channel, &reg) in DMA_PRESCALER.iter().enumerate() {
                     if idx == reg {
+                        // A write ends the pause unit in progress there and then;
+                        // the units after it take the new rate (`dmatest`'s "dma
+                        // pause (change prescale lower/higher)": PAUSE 256 at
+                        // prescale 4, changed 6 lines in, leaves 254 units, 510
+                        // lines at prescale 1 and 2288 at 8).
+                        if self.dma_pause[channel] != 0 {
+                            self.dma_pause[channel] -= 1;
+                        }
                         self.dma_prescaler[channel] = val.wrapping_add(1);
                     }
                 }

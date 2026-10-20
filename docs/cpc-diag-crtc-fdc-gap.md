@@ -1,4 +1,13 @@
-# CPC diagnostics: CRTC type and FDC lines differ from ZEsarUX (S7-hw known gap)
+# CPC diagnostics: CRTC type and FDC lines differ from ZEsarUX (S7-hw, closed 2026-10-19)
+
+**Closed 2026-10-19 by a second reference.** Caprice32 4.6 (`retroclawd-tools/scripts/capture_caprice_screen.py`, AMSDOS in slot
+7, the 664 at 64K) shows `CRTC 00` and `FDC DETECTED` on both machines: the FDC line confirms ours and shows ZEsarUX's "NONE"
+is its own detection failing. Caprice32's CRTC answers as a type 0, and the diagnostics report the type the emulated CRTC
+behaves as, so S7-hw now runs ours with `--crtc-type 0` and compares with Caprice32's picture (`golden_crop`: its 768x540 frame
+sits 6 lines higher than ours). The crop is the two values only; a run with `--crtc-type 1` fails it (2.99 against 1). The
+defaults stay 0 for the 664 and 1 for the 6128 (real boards varied). No emulator code changed.
+
+The original finding:
 
 Found 2026-10-18 by the `S7-hw` scenario of `cpc664.manifest.toml` and `cpc6128.manifest.toml`.
 
