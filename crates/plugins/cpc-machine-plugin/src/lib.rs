@@ -1034,6 +1034,7 @@ const CPC_CHARS: &[(&str, &str)] = &[
     ("Equals", "="),
     ("Pound", "\u{a3}"),
     ("Pipe", "|"),
+    ("Tilde", "~"),
     ("LeftBrace", "{"),
     ("RightBrace", "}"),
     ("Backtick", "`"),
@@ -1062,6 +1063,8 @@ fn cpc_combo_table() -> &'static [(&'static str, (CpcKey, CpcKey))] {
         ("Equals", (Shift, Minus)),
         ("Pound", (Shift, Caret)),
         ("Pipe", (Shift, At)),
+        // Control + 2 in the firmware's control table (probed: `PRINT ASC("~")` is 126).
+        ("Tilde", (Control, Digit2)),
         ("LeftBrace", (Shift, LeftBracket)),
         ("RightBrace", (Shift, RightBracket)),
         ("Backtick", (Shift, Backslash)),
@@ -2725,18 +2728,22 @@ mod tests {
         );
     }
 
-    /// The CPC firmware's key translation tables: ten lines of eight bits, normal at ROM 0x1D69 and shifted (right after it) at
-    /// 0x1DB9. They are what BASIC and the firmware turn a pressed matrix position into, i.e. the hardware's own
+    /// The CPC firmware's key translation tables: ten lines of eight bits, normal at ROM 0x1D69, shifted (right after it) at
+    /// 0x1DB9 and with Control (after that) at 0x1E09. They are what BASIC and the firmware turn a pressed matrix position into, i.e. the hardware's own
     /// key-to-character map; `Some` only when the ROM file is present.
-    fn firmware_key_tables() -> Option<(Vec<u8>, Vec<u8>)> {
+    fn firmware_key_tables() -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../roms/cpc/cpc464.rom");
         let rom = std::fs::read(path).ok()?;
-        Some((rom[0x1D69..0x1DB9].to_vec(), rom[0x1DB9..0x1E09].to_vec()))
+        Some((
+            rom[0x1D69..0x1DB9].to_vec(),
+            rom[0x1DB9..0x1E09].to_vec(),
+            rom[0x1E09..0x1E59].to_vec(),
+        ))
     }
 
     #[test]
     fn every_character_a_key_claims_is_what_the_firmware_makes_of_its_matrix_position() {
-        let Some((normal, shifted)) = firmware_key_tables() else {
+        let Some((normal, shifted, control)) = firmware_key_tables() else {
             eprintln!("skipping: roms/cpc/cpc464.rom is not present");
             return;
         };
@@ -2751,12 +2758,12 @@ mod tests {
                 wanted as u8
             };
             let got = if let Some((modifier, base)) = cpc_combo_from_name(name) {
-                assert_eq!(
-                    modifier,
-                    CpcKey::Shift,
-                    "{name} combines Shift with its key"
-                );
-                shifted[at(base.position())]
+                let table = match modifier {
+                    CpcKey::Shift => &shifted,
+                    CpcKey::Control => &control,
+                    other => panic!("{name} combines {other:?}, which has no table"),
+                };
+                table[at(base.position())]
             } else {
                 let key = cpc_key_from_name(name).unwrap_or_else(|| panic!("{name} is not a key"));
                 normal[at(key.position())]
@@ -2772,7 +2779,7 @@ mod tests {
 
     #[test]
     fn the_function_keys_are_the_ones_the_firmware_expands() {
-        let Some((normal, _)) = firmware_key_tables() else {
+        let Some((normal, _, _)) = firmware_key_tables() else {
             return;
         };
         // The firmware's expansion tokens: F0-F9 are 0x80-0x89, the `.` key 0x8A, small Enter 0x8B.
